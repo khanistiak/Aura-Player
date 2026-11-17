@@ -1,0 +1,6 @@
+{
+  "name": "Aura Player",
+  "description": "Material You Android video player with hierarchical Tree View directory browsing, Private Vault, General Settings, and Hardware Codec Diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

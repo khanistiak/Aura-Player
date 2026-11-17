@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">Aura Player</string>
+    <string name="splash_subtitle">4K • VAULT</string>
+    <string name="nav_folders">Folders</string>
+    <string name="nav_all_videos">All Videos</string>
+    <string name="nav_vault">Private Vault</string>
+    <string name="search_videos_hint">Search videos or folders…</string>
+    <string name="permission_title">Media Access Required</string>
+    <string name="permission_desc">Grant video access to scan local 4K &amp; 1080p videos, browse folders, and manage your Private Vault.</string>
+    <string name="grant_permission">Grant Video Access</string>
+    <string name="vault_locked_title">Private Vault Locked</string>
+    <string name="vault_locked_subtitle">Authenticate with Biometrics or Device PIN to access hidden videos</string>
+    <string name="unlock_vault">Unlock Private Vault</string>
+    <string name="move_to_vault">Move to Private Vault</string>
+    <string name="restore_to_gallery">Unhide / Restore to Gallery</string>
+    <string name="delete_from_vault">Delete Permanently</string>
+</resources>

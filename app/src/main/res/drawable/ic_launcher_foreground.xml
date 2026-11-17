@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Soft ambient drop shadow beneath the squircle tile (inside 66dp safe zone) -->
+    <path
+        android:fillColor="#1A120A38"
+        android:pathData="M43,23.5 L65,23.5 A21,21 0 0,1 86,44.5 L86,66.5 A21,21 0 0,1 65,87.5 L43,87.5 A21,21 0 0,1 22,66.5 L22,44.5 A21,21 0 0,1 43,23.5 Z" />
+    <path
+        android:fillColor="#2E160D42"
+        android:pathData="M43.5,22.8 L64.5,22.8 A20.5,20.5 0 0,1 85,43.3 L85,64.3 A20.5,20.5 0 0,1 64.5,84.8 L43.5,84.8 A20.5,20.5 0 0,1 23,64.3 L23,43.3 A20.5,20.5 0 0,1 43.5,22.8 Z" />
+
+    <!-- Elevated frosted-white rounded squircle tile (22dp radius) inside 66dp safe zone -->
+    <path android:pathData="M44,21 L64,21 A22,22 0 0,1 86,43 L86,63 A22,22 0 0,1 64,85 L44,85 A22,22 0 0,1 22,63 L22,43 A22,22 0 0,1 44,21 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="54"
+                android:endY="85"
+                android:startX="54"
+                android:startY="21"
+                android:type="linear">
+                <item
+                    android:color="#FAFFFFFF"
+                    android:offset="0.0" />
+                <item
+                    android:color="#EBF5F8FF"
+                    android:offset="0.55" />
+                <item
+                    android:color="#E0EBF0FF"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glossy top highlight sheen inside upper tile -->
+    <path android:pathData="M44,22 L64,22 A21,21 0 0,1 85,43 L85,49 C72,53 36,53 23,49 L23,43 A21,21 0 0,1 44,22 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="54"
+                android:endY="52"
+                android:startX="54"
+                android:startY="22"
+                android:type="linear">
+                <item
+                    android:color="#7AFFFFFF"
+                    android:offset="0.0" />
+                <item
+                    android:color="#00FFFFFF"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Crisp luminous specular rim around the squircle tile -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M44,21.5 L64,21.5 A21.5,21.5 0 0,1 85.5,43 L85.5,63 A21.5,21.5 0 0,1 64,84.5 L44,84.5 A21.5,21.5 0 0,1 22.5,63 L22.5,43 A21.5,21.5 0 0,1 44,21.5 Z"
+        android:strokeWidth="1.2">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:endX="54"
+                android:endY="85"
+                android:startX="54"
+                android:startY="21"
+                android:type="linear">
+                <item
+                    android:color="#E6FFFFFF"
+                    android:offset="0.0" />
+                <item
+                    android:color="#55FFFFFF"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Soft shadow under the Play triangle -->
+    <path
+        android:fillColor="#24A8267E"
+        android:pathData="M45,40.8 C45,37.8 48.2,36.0 50.8,37.6 L69.8,49.4 C72.2,50.9 72.2,54.3 69.8,55.8 L50.8,67.6 C48.2,69.2 45,67.4 45,64.4 Z" />
+
+    <!-- Vivid Coral-Orange (#FF6B35) to Magenta-Violet (#C837AB) Rounded Play Triangle -->
+    <path android:pathData="M44.5,39.5 C44.5,36.5 47.7,34.7 50.3,36.3 L69.3,48.1 C71.7,49.6 71.7,53.0 69.3,54.5 L50.3,66.3 C47.7,67.9 44.5,66.1 44.5,63.1 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="71"
+                android:endY="66"
+                android:startX="44"
+                android:startY="36"
+                android:type="linear">
+                <item
+                    android:color="#FFFF6B35"
+                    android:offset="0.0" />
+                <item
+                    android:color="#FFE84A70"
+                    android:offset="0.5" />
+                <item
+                    android:color="#FFC837AB"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
