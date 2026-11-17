@@ -2,13 +2,9 @@ package com.istiak.auraplayer
 
 import android.app.ActivityManager
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
 import android.media.MediaCodecList
 import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -40,7 +36,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
@@ -63,7 +58,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -74,7 +68,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.content.ContextCompat
 import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
 import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
@@ -118,7 +111,6 @@ fun AboutScreen(
     var activeModal by remember { mutableStateOf<AboutModalType?>(null) }
 
     val systemSpecs = remember(context) { collectLiveSystemSpecs(context) }
-    val appIconBitmap = remember(context) { loadLauncherImageBitmap(context) }
 
     val listState = rememberLazyListState()
     val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -188,30 +180,12 @@ fun AboutScreen(
                         .border(1.dp, heroBorder, heroShape)
                         .padding(horizontal = 20.dp, vertical = 22.dp)
                 ) {
-                    // Launcher emblem
-                    Box(
-                        modifier = Modifier
-                            .size(74.dp)
-                            .shadow(10.dp, RoundedCornerShape(20.dp))
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(if (isDark) Color(0xFF101629) else Color.White),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (appIconBitmap != null) {
-                            Image(
-                                bitmap = appIconBitmap,
-                                contentDescription = "Aura Player Emblem",
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Filled.PlayCircleFilled,
-                                contentDescription = "Aura Player Emblem",
-                                tint = AboutCobalt,
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
-                    }
+                    // Minimal Liquid Glass Brand Emblem
+                    MinimalLiquidGlassLogo(
+                        size = 76.dp,
+                        cornerRadius = 22.dp,
+                        modifier = Modifier.testTag("about_brand_emblem")
+                    )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
@@ -587,22 +561,6 @@ private fun AboutDetailDialog(
             }
         }
     }
-}
-
-private fun loadLauncherImageBitmap(context: Context): androidx.compose.ui.graphics.ImageBitmap? {
-    return runCatching {
-        val drawable = ContextCompat.getDrawable(context, R.mipmap.ic_launcher) ?: return@runCatching null
-        if (drawable is BitmapDrawable && drawable.bitmap != null) {
-            return@runCatching drawable.bitmap.asImageBitmap()
-        }
-        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 144
-        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 144
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        drawable.setBounds(0, 0, canvas.width, canvas.height)
-        drawable.draw(canvas)
-        bmp.asImageBitmap()
-    }.getOrNull()
 }
 
 private fun collectLiveSystemSpecs(context: Context): List<Pair<String, String>> {

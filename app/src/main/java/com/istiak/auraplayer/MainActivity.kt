@@ -19,7 +19,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -135,6 +140,7 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.Theme_AuraPlayer_Starting)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -949,7 +955,6 @@ fun AuraPlayerApp(
     Box(modifier = Modifier.fillMaxSize()) {
         Crossfade(
             targetState = when {
-                showSplash -> "SPLASH"
                 pendingExternalVideoUri != null -> "PREPARING_EXTERNAL"
                 activePlayingVideo != null -> "PLAYER"
                 overlayScreen == ActiveOverlayScreen.MEDIA_INFO && mediaInfoTargetVideo != null -> "MEDIA_INFO"
@@ -967,9 +972,6 @@ fun AuraPlayerApp(
             label = "root_navigation"
         ) { state ->
         when (state) {
-            "SPLASH" -> {
-                SplashScreen(onSplashFinished = { showSplash = false })
-            }
             "PREPARING_EXTERNAL" -> {
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black))
             }
@@ -1775,6 +1777,15 @@ fun AuraPlayerApp(
                 updateManager = appUpdateManager,
                 onDismiss = { showUpdateBottomSheet = false }
             )
+        }
+
+        AnimatedVisibility(
+            visible = showSplash,
+            enter = fadeIn(animationSpec = tween(durationMillis = 300)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 300)) +
+                scaleOut(targetScale = 1.04f, animationSpec = tween(durationMillis = 300))
+        ) {
+            SplashScreen(onSplashFinished = { showSplash = false })
         }
     }
 }

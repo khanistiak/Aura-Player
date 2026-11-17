@@ -6,48 +6,43 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Soft ambient drop shadow beneath the squircle tile (inside 66dp safe zone) -->
-    <path
-        android:fillColor="#1A120A38"
-        android:pathData="M43,23.5 L65,23.5 A21,21 0 0,1 86,44.5 L86,66.5 A21,21 0 0,1 65,87.5 L43,87.5 A21,21 0 0,1 22,66.5 L22,44.5 A21,21 0 0,1 43,23.5 Z" />
-    <path
-        android:fillColor="#2E160D42"
-        android:pathData="M43.5,22.8 L64.5,22.8 A20.5,20.5 0 0,1 85,43.3 L85,64.3 A20.5,20.5 0 0,1 64.5,84.8 L43.5,84.8 A20.5,20.5 0 0,1 23,64.3 L23,43.3 A20.5,20.5 0 0,1 43.5,22.8 Z" />
-
-    <!-- Elevated frosted-white rounded squircle tile (22dp radius) inside 66dp safe zone -->
-    <path android:pathData="M44,21 L64,21 A22,22 0 0,1 86,43 L86,63 A22,22 0 0,1 64,85 L44,85 A22,22 0 0,1 22,63 L22,43 A22,22 0 0,1 44,21 Z">
+    <!-- Translucent dark frosted glass squircle body inside 66dp safe zone (22..86) -->
+    <path android:pathData="M42,22 L66,22 A20,20 0 0,1 86,42 L86,66 A20,20 0 0,1 66,86 L42,86 A20,20 0 0,1 22,66 L22,42 A20,20 0 0,1 42,22 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:endX="54"
-                android:endY="85"
-                android:startX="54"
-                android:startY="21"
+                android:endX="86"
+                android:endY="86"
+                android:startX="22"
+                android:startY="22"
                 android:type="linear">
                 <item
-                    android:color="#FAFFFFFF"
+                    android:color="#CC1B2236"
                     android:offset="0.0" />
                 <item
-                    android:color="#EBF5F8FF"
+                    android:color="#D9111524"
                     android:offset="0.55" />
                 <item
-                    android:color="#E0EBF0FF"
+                    android:color="#E60D101B"
                     android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- Glossy top highlight sheen inside upper tile -->
-    <path android:pathData="M44,22 L64,22 A21,21 0 0,1 85,43 L85,49 C72,53 36,53 23,49 L23,43 A21,21 0 0,1 44,22 Z">
+    <!-- Top specular glass sheen across the upper squircle -->
+    <path android:pathData="M42,23 L66,23 A19,19 0 0,1 85,42 L85,49 C72,53 36,53 23,49 L23,42 A19,19 0 0,1 42,23 Z">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:endX="54"
-                android:endY="52"
+                android:endY="51"
                 android:startX="54"
-                android:startY="22"
+                android:startY="23"
                 android:type="linear">
                 <item
-                    android:color="#7AFFFFFF"
+                    android:color="#38FFFFFF"
                     android:offset="0.0" />
+                <item
+                    android:color="#08FFFFFF"
+                    android:offset="0.7" />
                 <item
                     android:color="#00FFFFFF"
                     android:offset="1.0" />
@@ -55,52 +50,102 @@
         </aapt:attr>
     </path>
 
-    <!-- Crisp luminous specular rim around the squircle tile -->
+    <!-- Subtle translucent frosted glass rounded-squircle rim (strokeWidth = 1.5dp, Color.White.copy(alpha = 0.25f)) -->
     <path
         android:fillColor="#00000000"
-        android:pathData="M44,21.5 L64,21.5 A21.5,21.5 0 0,1 85.5,43 L85.5,63 A21.5,21.5 0 0,1 64,84.5 L44,84.5 A21.5,21.5 0 0,1 22.5,63 L22.5,43 A21.5,21.5 0 0,1 44,21.5 Z"
-        android:strokeWidth="1.2">
-        <aapt:attr name="android:strokeColor">
+        android:pathData="M42,22.75 L66,22.75 A19.25,19.25 0 0,1 85.25,42 L85.25,66 A19.25,19.25 0 0,1 66,85.25 L42,85.25 A19.25,19.25 0 0,1 22.75,66 L22.75,42 A19.25,19.25 0 0,1 42,22.75 Z"
+        android:strokeColor="#40FFFFFF"
+        android:strokeWidth="1.5" />
+
+    <!-- Top specular highlight arc along the squircle rim -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M26,35 A19.25,19.25 0 0,1 42,22.75 L66,22.75 A19.25,19.25 0 0,1 82,35"
+        android:strokeColor="#78E0F2FE"
+        android:strokeWidth="1.2" />
+
+    <!-- Luminous inner Liquid Glass orb halo (#60A5FA -> #6366F1 -> #A855F7) -->
+    <path android:pathData="M54,28 A26,26 0 1,1 53.99,28 Z">
+        <aapt:attr name="android:fillColor">
             <gradient
-                android:endX="54"
-                android:endY="85"
-                android:startX="54"
-                android:startY="21"
+                android:endX="76"
+                android:endY="76"
+                android:startX="32"
+                android:startY="32"
                 android:type="linear">
                 <item
-                    android:color="#E6FFFFFF"
+                    android:color="#5260A5FA"
                     android:offset="0.0" />
                 <item
-                    android:color="#55FFFFFF"
+                    android:color="#486366F1"
+                    android:offset="0.5" />
+                <item
+                    android:color="#52A855F7"
                     android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- Soft shadow under the Play triangle -->
+    <!-- Frosted circular glass ring around the Play emblem -->
     <path
-        android:fillColor="#24A8267E"
-        android:pathData="M45,40.8 C45,37.8 48.2,36.0 50.8,37.6 L69.8,49.4 C72.2,50.9 72.2,54.3 69.8,55.8 L50.8,67.6 C48.2,69.2 45,67.4 45,64.4 Z" />
+        android:fillColor="#00000000"
+        android:pathData="M54,28 A26,26 0 1,1 53.99,28 Z"
+        android:strokeColor="#4893C5FD"
+        android:strokeWidth="1.1" />
 
-    <!-- Vivid Coral-Orange (#FF6B35) to Magenta-Violet (#C837AB) Rounded Play Triangle -->
-    <path android:pathData="M44.5,39.5 C44.5,36.5 47.7,34.7 50.3,36.3 L69.3,48.1 C71.7,49.6 71.7,53.0 69.3,54.5 L50.3,66.3 C47.7,67.9 44.5,66.1 44.5,63.1 Z">
+    <!-- Soft ambient drop shadow beneath the Play triangle -->
+    <path
+        android:fillColor="#4D090D1A"
+        android:pathData="M44.5,40.2 C44.5,37.0 48.0,35.1 50.7,36.8 L68.8,48.0 C71.4,49.6 71.4,53.4 68.8,55.0 L50.7,66.2 C48.0,67.9 44.5,66.0 44.5,62.8 Z" />
+
+    <!-- Centered rounded triangular Play Emblem (#60A5FA -> #6366F1 -> #A855F7) -->
+    <path android:pathData="M44.5,39.2 C44.5,36.0 48.0,34.1 50.7,35.8 L68.8,47.0 C71.4,48.6 71.4,52.4 68.8,54.0 L50.7,65.2 C48.0,66.9 44.5,65.0 44.5,61.8 Z">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:endX="71"
-                android:endY="66"
+                android:endY="65"
                 android:startX="44"
-                android:startY="36"
+                android:startY="35"
                 android:type="linear">
                 <item
-                    android:color="#FFFF6B35"
+                    android:color="#FF60A5FA"
                     android:offset="0.0" />
                 <item
-                    android:color="#FFE84A70"
-                    android:offset="0.5" />
+                    android:color="#FF6366F1"
+                    android:offset="0.52" />
                 <item
-                    android:color="#FFC837AB"
+                    android:color="#FFA855F7"
                     android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
+
+    <!-- Subtle inner triangular depth layer -->
+    <path android:pathData="M47.8,42.8 C47.8,40.8 50.0,39.6 51.7,40.7 L64.5,48.6 C66.1,49.6 66.1,51.4 64.5,52.4 L51.7,60.3 C50.0,61.4 47.8,60.2 47.8,58.2 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="66"
+                android:endY="60"
+                android:startX="47"
+                android:startY="40"
+                android:type="linear">
+                <item
+                    android:color="#40FFFFFF"
+                    android:offset="0.0" />
+                <item
+                    android:color="#1860A5FA"
+                    android:offset="0.48" />
+                <item
+                    android:color="#2E1E1B4B"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Inner beveled glass highlight stroke (#93C5FD) -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M44.5,39.2 C44.5,36.0 48.0,34.1 50.7,35.8 L68.8,47.0 C71.4,48.6 71.4,52.4 68.8,54.0 L50.7,65.2 C48.0,66.9 44.5,65.0 44.5,61.8 Z"
+        android:strokeColor="#FF93C5FD"
+        android:strokeWidth="1.25" />
 </vector>
