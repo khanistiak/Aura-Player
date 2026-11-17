@@ -1,7 +1,5 @@
 package com.istiak.auraplayer
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -14,13 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -35,27 +30,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import coil.decode.VideoFrameDecoder
-import com.istiak.auraplayer.ui.theme.FabBlueEnd
-import com.istiak.auraplayer.ui.theme.FabBlueStart
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 
 @Composable
 fun rememberVideoImageLoader(): ImageLoader {
     val context = LocalContext.current
-    return remember(context) {
-        ImageLoader.Builder(context)
+    return remember(context.applicationContext) {
+        ImageLoader.Builder(context.applicationContext)
             .components {
+                add(VideoThumbnailFetcher.Factory(context.applicationContext))
                 add(VideoFrameDecoder.Factory())
             }
             .crossfade(true)
@@ -170,7 +159,7 @@ fun HomeScreen(
     val fallbackTopContentPadding = statusBarTop + 72.dp +
         (if (isDrilledInTree) 36.dp else 0.dp) +
         (if (showSearchBar) 54.dp else 0.dp)
-    val bottomContentPadding = navBarBottom + 104.dp
+    val bottomContentPadding = navBarBottom + 92.dp
 
     Box(
         modifier = modifier
@@ -336,41 +325,6 @@ fun HomeScreen(
                     onSelectStorageVolume = onSelectStorageVolume,
                     bottomContentPadding = bottomContentPadding,
                     modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
-
-        // Vibrant Royal-Blue Gradient Circle Resume-Play FAB (hidden during Multi-Select Mode)
-        if (videos.isNotEmpty() && !isMultiSelectMode) {
-            val fabBrush = remember {
-                Brush.linearGradient(listOf(FabBlueStart, FabBlueEnd))
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(end = 20.dp, bottom = 88.dp)
-                    .size(58.dp)
-                    .shadow(
-                        elevation = 14.dp,
-                        shape = CircleShape,
-                        ambientColor = FabBlueEnd.copy(alpha = 0.55f),
-                        spotColor = FabBlueStart.copy(alpha = 0.65f)
-                    )
-                    .clip(CircleShape)
-                    .background(fabBrush)
-                    .clickable(
-                        role = Role.Button,
-                        onClick = onResumeLastPlayed
-                    )
-                    .testTag("resume_play_fab"),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = "Resume Last Played Video",
-                    tint = Color.White,
-                    modifier = Modifier.size(30.dp)
                 )
             }
         }

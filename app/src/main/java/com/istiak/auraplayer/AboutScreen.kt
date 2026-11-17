@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.MediaCodecList
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,8 +60,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,7 +90,7 @@ private enum class AboutModalType {
 /**
  * About Page with Developer Credit & System/Device Info (`AboutScreen.kt`):
  * - Frozen `ScrollAwareFixedHeader`: `← About`
- * - Hero Brand Card (`24.dp` corners): AuraPlayer emblem, `Aura Player`, `v2.5.0 release`,
+ * - Hero Brand Card (`24.dp` corners): AuraPlayer emblem, `Aura Player`, dynamic version badge,
  *   highlighted pill badge `By Khan Istiak Shahabuddin`, and rounded action buttons
  *   (`Libraries`, `Privacy Policy`, `Check for Updates Now`).
  * - Device Info & `| System` Card reading live Android / Media3 hardware properties.
@@ -106,11 +109,14 @@ fun AboutScreen(
     val isDark = palette.isDark
 
     val updateManager = remember(context) { AppUpdateManager(context.applicationContext) }
+    val installedVersion = remember(context, updateManager) { updateManager.getInstalledVersionName(context) }
     var isCheckingForUpdates by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
     var activeModal by remember { mutableStateOf<AboutModalType?>(null) }
 
-    val systemSpecs = remember(context) { collectLiveSystemSpecs(context) }
+    val systemSpecs = remember(context, installedVersion) {
+        collectLiveSystemSpecs(context, installedVersion)
+    }
 
     val listState = rememberLazyListState()
     val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -180,12 +186,52 @@ fun AboutScreen(
                         .border(1.dp, heroBorder, heroShape)
                         .padding(horizontal = 20.dp, vertical = 22.dp)
                 ) {
-                    // Minimal Liquid Glass Brand Emblem
-                    MinimalLiquidGlassLogo(
-                        size = 76.dp,
-                        cornerRadius = 22.dp,
-                        modifier = Modifier.testTag("about_brand_emblem")
-                    )
+                    // Frosted Liquid Glass Brand Emblem (84.dp container with soft ambient glow)
+                    val logoContainerShape = RoundedCornerShape(24.dp)
+                    val logoGlassBg = if (isDark) {
+                        Color(0xFF10172C).copy(alpha = 0.78f)
+                    } else {
+                        Color.White.copy(alpha = 0.80f)
+                    }
+                    val logoGlassBorder = if (isDark) {
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.24f),
+                                Color(0xFF38BDF8).copy(alpha = 0.22f)
+                            )
+                        )
+                    } else {
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.96f),
+                                Color(0xFFD6E4FF).copy(alpha = 0.85f)
+                            )
+                        )
+                    }
+
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(84.dp)
+                            .shadow(
+                                elevation = 14.dp,
+                                shape = logoContainerShape,
+                                ambientColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.42f else 0.22f),
+                                spotColor = Color(0xFF0EA5E9).copy(alpha = if (isDark) 0.38f else 0.18f)
+                            )
+                            .clip(logoContainerShape)
+                            .background(logoGlassBg)
+                            .border(1.dp, logoGlassBorder, logoContainerShape)
+                            .padding(8.dp)
+                            .testTag("about_brand_emblem")
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.aura_logo),
+                            contentDescription = "Aura Player Logo",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
@@ -199,7 +245,7 @@ fun AboutScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = "v2.5.0 release",
+                        text = "v${installedVersion} release",
                         color = palette.secondaryText,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium
@@ -402,7 +448,10 @@ fun AboutScreen(
         UpdateBottomSheet(
             release = releaseInfo,
             updateManager = updateManager,
-            onDismiss = { availableUpdate = null }
+            onDismiss = {
+                updateManager.cancelUpdateNotification()
+                availableUpdate = null
+            }
         )
     }
 }
@@ -563,7 +612,10 @@ private fun AboutDetailDialog(
     }
 }
 
-private fun collectLiveSystemSpecs(context: Context): List<Pair<String, String>> {
+private fun collectLiveSystemSpecs(
+    context: Context,
+    installedVersion: String
+): List<Pair<String, String>> {
     val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
     val memInfo = ActivityManager.MemoryInfo()
     val ramFormatted = if (am != null) {
@@ -584,7 +636,7 @@ private fun collectLiveSystemSpecs(context: Context): List<Pair<String, String>>
     val hwVideoDecoderCount = countHardwareVideoDecoders()
 
     return listOf(
-        "App version" to "v2.5.0 release",
+        "App version" to "v${installedVersion} release",
         "Android version" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
         "Device brand" to Build.BRAND.replaceFirstChar { it.uppercase(Locale.US) },
         "Device manufacturer" to Build.MANUFACTURER,

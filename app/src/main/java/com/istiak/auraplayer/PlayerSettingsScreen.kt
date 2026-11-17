@@ -193,7 +193,7 @@ fun PlayerSettingsScreen(
                     PsSwitchRow(
                         icon = Icons.Filled.SkipNext,
                         title = "Auto-Play Next Episode",
-                        subtitle = "Automatically advance to the next video in the queue",
+                        subtitle = "Automatically play the next video in the folder when playback ends",
                         checked = settings.autoPlayNextEpisode,
                         onCheckedChange = onUpdateAutoPlayNextEpisode,
                         testTag = "switch_autoplay_next_episode"
@@ -201,8 +201,8 @@ fun PlayerSettingsScreen(
 
                     PsSwitchRow(
                         icon = Icons.Filled.FastForward,
-                        title = "Show +85s Skip Intro Pill",
-                        subtitle = "Display quick-skip intro capsule during the first two minutes",
+                        title = "+85s Skip Intro Button",
+                        subtitle = "Show quick +85s intro skip pill during playback",
                         checked = settings.showSkipIntroButton,
                         onCheckedChange = onUpdateShowSkipIntro,
                         showDivider = false,

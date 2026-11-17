@@ -110,12 +110,41 @@ class AppUpdateManager(context: Context) {
     }
 
     /**
+     * Reads the installed app `versionName` dynamically from [PackageManager] at runtime,
+     * falling back to [BuildConfig.VERSION_NAME].
+     */
+    fun getInstalledVersionName(context: Context = appContext): String {
+        val packageVersion = runCatching {
+            val pm = context.packageManager
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, 0)
+            }
+            info.versionName
+        }.getOrNull()
+
+        return packageVersion?.takeIf { it.isNotBlank() } ?: BuildConfig.VERSION_NAME
+    }
+
+    /**
+     * Cancels any active update notification from the system tray.
+     */
+    fun cancelUpdateNotification() {
+        runCatching {
+            NotificationManagerCompat.from(appContext).cancel(UPDATE_NOTIFICATION_ID)
+        }
+    }
+
+    /**
      * Fetches [GITHUB_LATEST_RELEASE_API] on [Dispatchers.IO] and compares against [localVersion].
      */
     suspend fun checkForUpdates(
-        localVersion: String = BuildConfig.VERSION_NAME,
+        localVersion: String = getInstalledVersionName(),
         apiUrl: String = GITHUB_LATEST_RELEASE_API
     ): UpdateCheckResult = withContext(Dispatchers.IO) {
+        val effectiveLocalVersion = localVersion.ifBlank { getInstalledVersionName() }
         var connection: HttpURLConnection? = null
         try {
             val url = URL(apiUrl)
@@ -125,25 +154,30 @@ class AppUpdateManager(context: Context) {
                 readTimeout = 10_000
                 instanceFollowRedirects = true
                 setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "AuraPlayer-Android/${BuildConfig.VERSION_NAME}")
+                setRequestProperty("User-Agent", "AuraPlayer-Android/${stripLeadingV(effectiveLocalVersion)}")
             }
 
             val code = connection.responseCode
             if (code !in 200..299) {
                 if (code == 404) {
-                    return@withContext UpdateCheckResult.UpToDate(stripLeadingV(localVersion))
+                    cancelUpdateNotification()
+                    return@withContext UpdateCheckResult.UpToDate(stripLeadingV(effectiveLocalVersion))
                 }
                 return@withContext UpdateCheckResult.Error("GitHub API returned HTTP $code")
             }
 
             val jsonText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val releaseInfo = parseReleaseJson(jsonText)
-                ?: return@withContext UpdateCheckResult.UpToDate(stripLeadingV(localVersion))
+            if (releaseInfo == null) {
+                cancelUpdateNotification()
+                return@withContext UpdateCheckResult.UpToDate(stripLeadingV(effectiveLocalVersion))
+            }
 
-            if (isNewerVersion(releaseInfo.tagName, localVersion)) {
+            if (isNewerVersion(releaseInfo.tagName, effectiveLocalVersion)) {
                 UpdateCheckResult.UpdateAvailable(releaseInfo)
             } else {
-                UpdateCheckResult.UpToDate(stripLeadingV(localVersion))
+                cancelUpdateNotification()
+                UpdateCheckResult.UpToDate(stripLeadingV(effectiveLocalVersion))
             }
         } catch (e: Exception) {
             UpdateCheckResult.Error(e.localizedMessage ?: "Unable to reach GitHub Releases")
@@ -153,20 +187,30 @@ class AppUpdateManager(context: Context) {
     }
 
     /**
-     * Runs on startup: checks GitHub Releases, posts a system notification if a newer release is found
-     * and hasn't been notified for that `tag_name` in [settingsStore], and returns the [ReleaseUpdateInfo].
+     * Runs on startup: checks GitHub Releases against the installed runtime version and
+     * `lastDismissedOrInstalledTag` in [settingsStore]. Only posts a notification and returns
+     * [ReleaseUpdateInfo] when a strictly newer semantic version is available and not dismissed.
      */
     suspend fun checkOnStartupAndNotifyIfNeeded(
         settingsStore: SettingsDataStore,
-        localVersion: String = BuildConfig.VERSION_NAME
+        localVersion: String = getInstalledVersionName()
     ): ReleaseUpdateInfo? = withContext(Dispatchers.IO) {
-        when (val result = checkForUpdates(localVersion = localVersion)) {
+        val effectiveLocalVersion = localVersion.ifBlank { getInstalledVersionName() }
+        when (val result = checkForUpdates(localVersion = effectiveLocalVersion)) {
             is UpdateCheckResult.UpdateAvailable -> {
                 val release = result.info
-                val lastNotifiedTag = runCatching {
-                    settingsStore.settingsFlow.first().lastNotifiedUpdateTag
-                }.getOrDefault("")
-                if (!lastNotifiedTag.equals(release.tagName, ignoreCase = true)) {
+                val settings = runCatching { settingsStore.settingsFlow.first() }.getOrNull()
+                val lastDismissedOrInstalled = settings?.lastDismissedOrInstalledTag.orEmpty()
+
+                if (!shouldPromptRelease(release.tagName, effectiveLocalVersion, lastDismissedOrInstalled)) {
+                    cancelUpdateNotification()
+                    return@withContext null
+                }
+
+                val lastNotifiedTag = settings?.lastNotifiedUpdateTag.orEmpty()
+                val alreadyNotified = lastNotifiedTag.isNotBlank() &&
+                    !isNewerVersion(release.tagName, lastNotifiedTag)
+                if (!alreadyNotified) {
                     val posted = postSystemUpdateNotification(release)
                     if (posted) {
                         settingsStore.setLastNotifiedUpdateTag(release.tagName)
@@ -174,7 +218,10 @@ class AppUpdateManager(context: Context) {
                 }
                 release
             }
-            else -> null
+            else -> {
+                cancelUpdateNotification()
+                null
+            }
         }
     }
 
@@ -278,8 +325,9 @@ class AppUpdateManager(context: Context) {
         }
 
         /**
-         * Compares two semantic version strings (e.g., `"v2.6.0"` vs `"2.5.0"` or `"1.0"`).
-         * Returns `true` strictly when [remoteTag] > [localVersion].
+         * Compares two semantic version strings (e.g., `"v2.7.0"` vs `"2.6.1"`).
+         * Strips `'v'`/`'V'`, whitespace, and pre-release/build suffixes (`-rc1`, `+build`),
+         * pads shorter segment lists with `0`, and returns `true` strictly when [remoteTag] > [localVersion].
          */
         fun isNewerVersion(
             remoteTag: String,
@@ -300,12 +348,29 @@ class AppUpdateManager(context: Context) {
             return false
         }
 
+        /**
+         * Returns `true` only when [remoteTag] is strictly newer than [installedVersion] AND
+         * strictly newer than any previously dismissed or installed [lastDismissedOrInstalledTag].
+         */
+        fun shouldPromptRelease(
+            remoteTag: String,
+            installedVersion: String,
+            lastDismissedOrInstalledTag: String
+        ): Boolean {
+            if (!isNewerVersion(remoteTag, installedVersion)) return false
+            if (lastDismissedOrInstalledTag.isBlank()) return true
+            return isNewerVersion(remoteTag, lastDismissedOrInstalledTag)
+        }
+
         private fun parseNumericVersionParts(rawVersion: String): List<Int> {
-            val cleaned = stripLeadingV(rawVersion).substringBefore('-')
+            val cleaned = stripLeadingV(rawVersion)
+                .substringBefore('-')
+                .substringBefore('+')
+                .trim()
             if (cleaned.isEmpty()) return emptyList()
             return cleaned.split('.')
                 .mapNotNull { token ->
-                    val digits = token.takeWhile { it.isDigit() }
+                    val digits = token.trim().takeWhile { it.isDigit() }
                     digits.toIntOrNull()
                 }
         }

@@ -194,7 +194,8 @@ data class AppSettingsState(
     val seenBaselineEpochSec: Long = 0L,
     val playbackPositionsMs: Map<Long, Long> = emptyMap(),
     val cachedDurationsMs: Map<Long, Long> = emptyMap(),
-    val lastNotifiedUpdateTag: String = ""
+    val lastNotifiedUpdateTag: String = "",
+    val lastDismissedOrInstalledTag: String = ""
 ) {
     val defaultResumePlayback: Boolean
         get() = resumePlaybackMode == ResumePlaybackMode.RESUME
@@ -272,6 +273,7 @@ class SettingsDataStore(private val context: Context) {
         val PLAYBACK_POSITIONS = stringSetPreferencesKey("playback_positions")
         val CACHED_DURATIONS = stringSetPreferencesKey("cached_durations")
         val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
+        val LAST_DISMISSED_OR_INSTALLED_TAG = stringPreferencesKey("last_dismissed_or_installed_tag")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.appDataStore.data.map { prefs ->
@@ -378,7 +380,8 @@ class SettingsDataStore(private val context: Context) {
             seenBaselineEpochSec = prefs[Keys.SEEN_BASELINE_EPOCH_SEC] ?: 0L,
             playbackPositionsMs = positionsMap,
             cachedDurationsMs = cachedDurationsMap,
-            lastNotifiedUpdateTag = prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] ?: ""
+            lastNotifiedUpdateTag = prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] ?: "",
+            lastDismissedOrInstalledTag = prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG] ?: ""
         )
     }
 
@@ -706,6 +709,12 @@ class SettingsDataStore(private val context: Context) {
     suspend fun setLastNotifiedUpdateTag(tagName: String) {
         context.appDataStore.edit { prefs ->
             prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] = tagName.trim()
+        }
+    }
+
+    suspend fun setLastDismissedOrInstalledTag(tagName: String) {
+        context.appDataStore.edit { prefs ->
+            prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG] = tagName.trim()
         }
     }
 }

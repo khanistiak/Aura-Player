@@ -115,15 +115,16 @@ enum class FolderPickerMode {
  */
 class MainActivity : FragmentActivity() {
 
-    private var shouldEnterPipOnUserLeave: Boolean = false
+    private var isActivelyPlayingVideo: Boolean = false
+    private var pipAspectRatio: Rational = Rational(16, 9)
     private val showUpdateSheetRequestState = mutableStateOf(false)
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (shouldEnterPipOnUserLeave && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (isActivelyPlayingVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             runCatching {
                 val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
+                    .setAspectRatio(pipAspectRatio)
                     .build()
                 enterPictureInPictureMode(params)
             }
@@ -188,7 +189,10 @@ class MainActivity : FragmentActivity() {
                         onConsumeUpdateSheetNotificationIntent = {
                             showUpdateSheetRequestState.value = false
                         },
-                        onUpdatePipEligibility = { eligible -> shouldEnterPipOnUserLeave = eligible }
+                        onUpdatePipState = { activeForPip, ratio ->
+                            isActivelyPlayingVideo = activeForPip
+                            pipAspectRatio = ratio
+                        }
                     )
                 }
             }
@@ -204,7 +208,7 @@ fun AuraPlayerApp(
     initialExternalVideoUri: Uri? = null,
     openUpdateSheetFromNotification: Boolean = false,
     onConsumeUpdateSheetNotificationIntent: () -> Unit = {},
-    onUpdatePipEligibility: (Boolean) -> Unit = {}
+    onUpdatePipState: (Boolean, Rational) -> Unit = { _, _ -> }
 ) {
     val palette = LocalExtendedPalette.current
     val coroutineScope = rememberCoroutineScope()
@@ -477,6 +481,10 @@ fun AuraPlayerApp(
                     loader.diskCache?.clear()
                 }
                 runCatching {
+                    ThumbnailCacheManager.clearMemoryCache()
+                    ThumbnailCacheManager.getDiskCacheDir(activity).deleteRecursively()
+                }
+                runCatching {
                     File(activity.cacheDir, "image_cache").deleteRecursively()
                 }
             }
@@ -569,8 +577,34 @@ fun AuraPlayerApp(
         }
     }
 
-    LaunchedEffect(activePlayingVideo, settings.backgroundAudioOrPipOnHome) {
-        onUpdatePipEligibility(activePlayingVideo != null && settings.backgroundAudioOrPipOnHome)
+    var isPlayerPlaybackActive by remember { mutableStateOf(false) }
+    var pipVideoWidth by remember { mutableStateOf(0) }
+    var pipVideoHeight by remember { mutableStateOf(0) }
+    var pipVideoRotation by remember { mutableStateOf(0) }
+
+    val isActivelyPlayingVideo = activePlayingVideo != null &&
+        overlayScreen == ActiveOverlayScreen.NONE &&
+        isPlayerPlaybackActive
+
+    LaunchedEffect(
+        isActivelyPlayingVideo,
+        settings.backgroundAudioOrPipOnHome,
+        pipVideoWidth,
+        pipVideoHeight,
+        pipVideoRotation
+    ) {
+        val ratio = computePipAspectRatio(pipVideoWidth, pipVideoHeight, pipVideoRotation)
+        val allowAutoPip = isActivelyPlayingVideo && settings.backgroundAudioOrPipOnHome
+        onUpdatePipState(allowAutoPip, ratio)
+        if (!allowAutoPip && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                activity.setPictureInPictureParams(
+                    PictureInPictureParams.Builder()
+                        .setAutoEnterEnabled(false)
+                        .build()
+                )
+            }
+        }
     }
 
     LaunchedEffect(
@@ -636,10 +670,19 @@ fun AuraPlayerApp(
     ) { granted ->
         if (granted) {
             val release = startupUpdateRelease
-            if (release != null) {
+            val installedVersion = appUpdateManager.getInstalledVersionName()
+            if (release != null &&
+                AppUpdateManager.shouldPromptRelease(
+                    release.tagName,
+                    installedVersion,
+                    settings.lastDismissedOrInstalledTag
+                )
+            ) {
                 coroutineScope.launch {
                     val lastNotified = settings.lastNotifiedUpdateTag
-                    if (!lastNotified.equals(release.tagName, ignoreCase = true)) {
+                    val alreadyNotified = lastNotified.isNotBlank() &&
+                        !AppUpdateManager.isNewerVersion(release.tagName, lastNotified)
+                    if (!alreadyNotified) {
                         if (appUpdateManager.postSystemUpdateNotification(release)) {
                             settingsStore.setLastNotifiedUpdateTag(release.tagName)
                         }
@@ -691,6 +734,9 @@ fun AuraPlayerApp(
             if (release != null) {
                 startupUpdateRelease = release
                 showUpdateBottomSheet = true
+            } else {
+                startupUpdateRelease = null
+                showUpdateBottomSheet = false
             }
         }
     }
@@ -699,13 +745,20 @@ fun AuraPlayerApp(
     LaunchedEffect(openUpdateSheetFromNotification) {
         if (openUpdateSheetFromNotification) {
             onConsumeUpdateSheetNotificationIntent()
-            val release = startupUpdateRelease ?: when (val res = appUpdateManager.checkForUpdates()) {
+            val installedVersion = appUpdateManager.getInstalledVersionName()
+            val release = startupUpdateRelease?.takeIf {
+                AppUpdateManager.isNewerVersion(it.tagName, installedVersion)
+            } ?: when (val res = appUpdateManager.checkForUpdates(localVersion = installedVersion)) {
                 is UpdateCheckResult.UpdateAvailable -> res.info
                 else -> null
             }
-            if (release != null) {
+            if (release != null && AppUpdateManager.isNewerVersion(release.tagName, installedVersion)) {
                 startupUpdateRelease = release
                 showUpdateBottomSheet = true
+            } else {
+                startupUpdateRelease = null
+                showUpdateBottomSheet = false
+                appUpdateManager.cancelUpdateNotification()
             }
         }
     }
@@ -1003,7 +1056,14 @@ fun AuraPlayerApp(
                         onDeleteVideoFromPlayer = { vid ->
                             deletePublicVideo(vid)
                         },
+                        onPipMetadataChanged = { w, h, rot, activelyPlaying ->
+                            pipVideoWidth = w
+                            pipVideoHeight = h
+                            pipVideoRotation = rot
+                            isPlayerPlaybackActive = activelyPlaying
+                        },
                         onClosePlayer = {
+                            isPlayerPlaybackActive = false
                             activePlayingVideo = null
                         }
                     )
@@ -1389,6 +1449,10 @@ fun AuraPlayerApp(
                                     )
                                 }
                             },
+                            availableLibraryVideos = allVideos.filterNot { it.isVaultItem },
+                            onImportVideosToVault = { selectedVideos ->
+                                moveVideosToVaultBatch(selectedVideos)
+                            },
                             onBack = { overlayScreen = ActiveOverlayScreen.NONE }
                         )
                     }
@@ -1570,6 +1634,15 @@ fun AuraPlayerApp(
                                         if (tab != MainNavTab.HOME) {
                                             currentTreePath = ""
                                             selectedFlatFolderPath = null
+                                        }
+                                    },
+                                    showResumeButton = allVideos.isNotEmpty(),
+                                    onResumeLastPlayed = {
+                                        val lastUri = settings.lastPlayedVideoUri
+                                        val target = allVideos.find { it.uri.toString() == lastUri }
+                                            ?: allVideos.firstOrNull()
+                                        if (target != null) {
+                                            launchPlayer(target, allVideos)
                                         }
                                     },
                                     modifier = Modifier.align(Alignment.BottomCenter)
@@ -1772,10 +1845,18 @@ fun AuraPlayerApp(
         }
 
         if (showUpdateBottomSheet && startupUpdateRelease != null) {
+            val activeRelease = startupUpdateRelease!!
             UpdateBottomSheet(
-                release = startupUpdateRelease!!,
+                release = activeRelease,
                 updateManager = appUpdateManager,
-                onDismiss = { showUpdateBottomSheet = false }
+                onDismiss = {
+                    showUpdateBottomSheet = false
+                    startupUpdateRelease = null
+                    appUpdateManager.cancelUpdateNotification()
+                    coroutineScope.launch {
+                        settingsStore.setLastDismissedOrInstalledTag(activeRelease.tagName)
+                    }
+                }
             )
         }
 

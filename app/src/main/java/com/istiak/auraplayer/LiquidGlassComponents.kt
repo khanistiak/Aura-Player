@@ -1,6 +1,9 @@
 package com.istiak.auraplayer
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -9,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,12 +22,15 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -36,6 +43,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.outlined.FolderSpecial
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -57,7 +65,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -577,70 +587,73 @@ fun LiquidGlassTopHeader(
 }
 
 /**
- * Floating Bottom Navigation Capsule (`Home` | `All Videos`) powered by [FrostedGlassSurface]
- * with `shape = RoundedCornerShape(999.dp)`, `blurRadius = 22.dp`, `glassProgressOverride = 1f`,
- * and [crystalOuterShadow] so both the Top Header and Bottom Capsule share the exact same
- * real-time `GraphicsLayer` backdrop refraction engine.
+ * Unified Floating Bottom Navigation Capsule (`Home` | `All Videos`) + inline matching
+ * Liquid Crystal Play/Resume button powered by [FrostedGlassSurface] so both share the exact
+ * same real-time `GraphicsLayer` backdrop refraction, frosted tint, and specular rim.
  */
 @Composable
 fun LiquidGlassBottomNavPill(
     selectedTab: MainNavTab,
     onSelectTab: (MainNavTab) -> Unit,
+    showResumeButton: Boolean = false,
+    onResumeLastPlayed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
 
     val capsuleShape = RoundedCornerShape(999.dp)
-    val rimBrush = if (isDark) {
-        Brush.verticalGradient(
-            0.0f to Color.White.copy(alpha = 0.34f),
-            0.5f to Color.White.copy(alpha = 0.10f),
-            1.0f to Color(0xFF60A5FA).copy(alpha = 0.24f)
+    val liquidCrystalBorder = if (isDark) {
+        Brush.linearGradient(
+            0.0f to Color.White.copy(alpha = 0.85f),
+            0.45f to Color(0xFF60A5FA).copy(alpha = 0.34f),
+            1.0f to Color.White.copy(alpha = 0.18f)
         )
     } else {
-        Brush.verticalGradient(
-            0.0f to Color.White.copy(alpha = 0.90f),
-            0.5f to Color.White.copy(alpha = 0.28f),
-            1.0f to Color.White.copy(alpha = 0.62f)
+        Brush.linearGradient(
+            0.0f to Color.White.copy(alpha = 0.85f),
+            0.55f to Color.White.copy(alpha = 0.42f),
+            1.0f to Color.White.copy(alpha = 0.18f)
         )
     }
     val glassBaseBg = if (isDark) {
-        Color(0xFF121726).copy(alpha = 0.45f)
+        Color(0xFF1A2236).copy(alpha = 0.58f)
     } else {
-        Color.White.copy(alpha = 0.34f)
+        Color.White.copy(alpha = 0.55f)
     }
     val specularSheenBrush = if (isDark) {
         Brush.verticalGradient(
-            0.0f to Color.White.copy(alpha = 0.26f),
+            0.0f to Color.White.copy(alpha = 0.24f),
             0.48f to Color.White.copy(alpha = 0.06f),
             1.0f to Color(0xFF60A5FA).copy(alpha = 0.16f)
         )
     } else {
         Brush.verticalGradient(
-            0.0f to Color.White.copy(alpha = 0.65f),
+            0.0f to Color.White.copy(alpha = 0.62f),
             0.48f to Color.White.copy(alpha = 0.14f),
-            1.0f to Color.White.copy(alpha = 0.36f)
+            1.0f to Color.White.copy(alpha = 0.32f)
         )
     }
     val activePillBg = if (isDark) Color(0xFF283554).copy(alpha = 0.78f) else MxBlueAccent.copy(alpha = 0.14f)
-    val activeTint = if (isDark) palette.brandTitleColor else MxBlueAccent
+    val activeTint = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB)
 
-    Box(
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(bottom = 14.dp),
-        contentAlignment = Alignment.Center
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         FrostedGlassSurface(
             shape = capsuleShape,
             blurRadius = 28.dp,
-            border = BorderStroke(1.2.dp, rimBrush),
+            border = BorderStroke(1.dp, liquidCrystalBorder),
             glassProgressOverride = 1f,
             baseBackgroundColor = glassBaseBg,
             specularOverlayBrush = specularSheenBrush,
             modifier = Modifier
+                .height(56.dp)
                 .crystalOuterShadow(
                     shape = capsuleShape,
                     isDark = isDark,
@@ -651,20 +664,21 @@ fun LiquidGlassBottomNavPill(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
             ) {
                 MainNavTab.entries.forEach { tab ->
                     val isSelected = selectedTab == tab
                     Box(
                         modifier = Modifier
                             .height(44.dp)
+                            .widthIn(min = 108.dp)
                             .clip(capsuleShape)
                             .background(if (isSelected) activePillBg else Color.Transparent)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null
                             ) { onSelectTab(tab) }
-                            .padding(horizontal = 22.dp)
+                            .padding(horizontal = 16.dp)
                             .testTag(tab.testTag),
                         contentAlignment = Alignment.Center
                     ) {
@@ -678,15 +692,68 @@ fun LiquidGlassBottomNavPill(
                                 tint = if (isSelected) activeTint else palette.secondaryText,
                                 modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(7.dp))
                             Text(
                                 text = tab.title,
                                 color = if (isSelected) activeTint else palette.secondaryText,
                                 fontSize = 13.5.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1
                             )
                         }
                     }
+                }
+            }
+        }
+
+        if (showResumeButton) {
+            val playInteractionSource = remember { MutableInteractionSource() }
+            val isPressed by playInteractionSource.collectIsPressedAsState()
+            val pressScale by animateFloatAsState(
+                targetValue = if (isPressed) 0.92f else 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMedium
+                ),
+                label = "liquid_play_press_scale"
+            )
+
+            FrostedGlassSurface(
+                shape = CircleShape,
+                blurRadius = 28.dp,
+                border = BorderStroke(1.dp, liquidCrystalBorder),
+                glassProgressOverride = 1f,
+                baseBackgroundColor = glassBaseBg,
+                specularOverlayBrush = specularSheenBrush,
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = pressScale
+                        scaleY = pressScale
+                    }
+                    .size(56.dp)
+                    .crystalOuterShadow(
+                        shape = CircleShape,
+                        isDark = isDark,
+                        elevation = 18.dp
+                    )
+                    .clickable(
+                        interactionSource = playInteractionSource,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onResumeLastPlayed
+                    )
+                    .testTag("resume_play_fab")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = "Resume Last Played Video",
+                        tint = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB),
+                        modifier = Modifier.size(28.dp)
+                    )
                 }
             }
         }

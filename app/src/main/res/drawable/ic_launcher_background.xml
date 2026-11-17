@@ -6,43 +6,22 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Deep obsidian-slate radial gradient (#181C28 center to #0D1017 edges) -->
+    <!-- Deep obsidian-blue radial gradient (#0B132B center to #050814 edges) -->
     <path android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:centerX="54"
                 android:centerY="54"
-                android:gradientRadius="68"
+                android:gradientRadius="72"
                 android:type="radial">
                 <item
-                    android:color="#FF181C28"
+                    android:color="#FF0B132B"
                     android:offset="0.0" />
                 <item
-                    android:color="#FF121620"
-                    android:offset="0.62" />
+                    android:color="#FF070D1E"
+                    android:offset="0.65" />
                 <item
-                    android:color="#FF0D1017"
-                    android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- Subtle ambient indigo-violet core glow beneath the glass emblem -->
-    <path android:pathData="M0,0h108v108h-108z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:centerX="54"
-                android:centerY="54"
-                android:gradientRadius="42"
-                android:type="radial">
-                <item
-                    android:color="#336366F1"
-                    android:offset="0.0" />
-                <item
-                    android:color="#18A855F7"
-                    android:offset="0.55" />
-                <item
-                    android:color="#000D1017"
+                    android:color="#FF050814"
                     android:offset="1.0" />
             </gradient>
         </aapt:attr>

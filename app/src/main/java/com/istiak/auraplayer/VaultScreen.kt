@@ -2,8 +2,14 @@ package com.istiak.auraplayer
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -39,6 +46,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -58,7 +66,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -72,6 +82,8 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import com.istiak.auraplayer.ui.components.FrostedGlassSurface
+import com.istiak.auraplayer.ui.components.crystalOuterShadow
 import com.istiak.auraplayer.ui.theme.DangerRed
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import java.io.File
@@ -101,6 +113,8 @@ fun VaultScreen(
     isSecureFolderSettingsHidden: Boolean = false,
     onOpenPrivateFolderSettings: () -> Unit = {},
     onUnhideSecureFolderSettings: () -> Unit = {},
+    availableLibraryVideos: List<VideoItem> = emptyList(),
+    onImportVideosToVault: (List<VideoItem>) -> Unit = {},
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -108,7 +122,9 @@ fun VaultScreen(
 
     val context = LocalContext.current
     val palette = LocalExtendedPalette.current
+    val isDark = palette.isDark
     var showVaultOverflowMenu by remember { mutableStateOf(false) }
+    var showImportPickerSheet by remember { mutableStateOf(false) }
     val imageLoader = rememberVideoImageLoader()
     val vaultManager = remember(context) { PrivateVaultManager(context.applicationContext) }
 
@@ -150,12 +166,13 @@ fun VaultScreen(
             .fillMaxSize()
             .testTag("vault_screen")
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .windowInsetsPadding(WindowInsets.navigationBars)
-        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
             // Top App Bar
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -439,7 +456,14 @@ fun VaultScreen(
                             .padding(bottom = 80.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(24.dp))
+                                .clickable { showImportPickerSheet = true }
+                                .padding(horizontal = 20.dp, vertical = 22.dp)
+                                .testTag("vault_empty_import_card")
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(68.dp)
@@ -449,7 +473,7 @@ fun VaultScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.Shield,
-                                    contentDescription = null,
+                                    contentDescription = "Tap to import videos into Private Vault",
                                     tint = palette.periwinkleBadgeText,
                                     modifier = Modifier.size(34.dp)
                                 )
@@ -462,7 +486,7 @@ fun VaultScreen(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Tap the ⋮ button or long-press any video in your folders and choose \"Move to Private Vault\" to lock it instantly.",
+                                text = "Tap the + button below or long-press any video in your folders and choose \"Move to Private Vault\" to lock it instantly.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = palette.secondaryText,
                                 textAlign = TextAlign.Center
@@ -496,6 +520,114 @@ fun VaultScreen(
                 }
             }
         }
+
+        if (isUnlocked) {
+            val fabInteractionSource = remember { MutableInteractionSource() }
+            val isPressed by fabInteractionSource.collectIsPressedAsState()
+            val pressScale by animateFloatAsState(
+                targetValue = if (isPressed) 0.92f else 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMedium
+                ),
+                label = "vault_add_fab_press_scale"
+            )
+            val glassBaseBg = if (isDark) {
+                Color(0xFF1A2236).copy(alpha = 0.64f)
+            } else {
+                Color.White.copy(alpha = 0.60f)
+            }
+            val crystalBorder = if (isDark) {
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.24f),
+                        Color(0xFF93C5FD).copy(alpha = 0.14f),
+                        Color.White.copy(alpha = 0.10f)
+                    )
+                )
+            } else {
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.96f),
+                        Color(0xFFE0EBFF).copy(alpha = 0.72f),
+                        Color.White.copy(alpha = 0.88f)
+                    )
+                )
+            }
+            val specularSheen = if (isDark) {
+                Brush.verticalGradient(
+                    0.0f to Color.White.copy(alpha = 0.16f),
+                    0.5f to Color.Transparent,
+                    1.0f to Color.White.copy(alpha = 0.06f)
+                )
+            } else {
+                Brush.verticalGradient(
+                    0.0f to Color.White.copy(alpha = 0.64f),
+                    0.48f to Color.White.copy(alpha = 0.16f),
+                    1.0f to Color.White.copy(alpha = 0.34f)
+                )
+            }
+            val plusTint = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB)
+
+            FrostedGlassSurface(
+                shape = CircleShape,
+                blurRadius = 28.dp,
+                border = BorderStroke(1.dp, crystalBorder),
+                glassProgressOverride = 1f,
+                baseBackgroundColor = glassBaseBg,
+                specularOverlayBrush = specularSheen,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 20.dp, bottom = 20.dp)
+                    .graphicsLayer {
+                        scaleX = pressScale
+                        scaleY = pressScale
+                    }
+                    .size(58.dp)
+                    .crystalOuterShadow(
+                        shape = CircleShape,
+                        isDark = isDark,
+                        elevation = 18.dp
+                    )
+                    .clickable(
+                        interactionSource = fabInteractionSource,
+                        indication = null,
+                        onClick = { showImportPickerSheet = true }
+                    )
+                    .testTag("vault_add_videos_fab")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = "Add Videos to Private Vault",
+                        tint = plusTint,
+                        modifier = Modifier.size(30.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    if (isUnlocked && showImportPickerSheet) {
+        val importableVideos = remember(availableLibraryVideos, resolvedVaultVideos) {
+            val lockedPaths = resolvedVaultVideos.mapNotNull { it.relativePath.takeIf(String::isNotBlank) }.toSet()
+            availableLibraryVideos.filterNot { candidate ->
+                candidate.isVaultItem || (candidate.filePath != null && candidate.filePath in lockedPaths)
+            }
+        }
+        VaultVideoPickerBottomSheet(
+            availableVideos = importableVideos,
+            imageLoader = imageLoader,
+            onDismiss = { showImportPickerSheet = false },
+            onMoveSelectedToVault = { selected ->
+                onImportVideosToVault(selected)
+            }
+        )
+    }
     }
 }
 

@@ -34,11 +34,16 @@ import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -59,6 +64,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -74,13 +80,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -164,7 +171,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -175,6 +186,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -953,8 +965,17 @@ fun VideoPlayerScreen(
     }
 
     // Sync Android 12+ Auto-PiP params, aspect ratio, and RemoteAction Play/Pause state live
-    LaunchedEffect(isPlaying, activeVideoWidth, activeVideoHeight, activeVideoRotation) {
-        onPipMetadataChanged(activeVideoWidth, activeVideoHeight, activeVideoRotation, isPlaying)
+    LaunchedEffect(
+        isPlaying,
+        isScreenLocked,
+        settings.backgroundAudioOrPipOnHome,
+        activeVideoWidth,
+        activeVideoHeight,
+        activeVideoRotation
+    ) {
+        val activeForAutoPip = isPlaying && !isScreenLocked
+        val allowAutoPip = activeForAutoPip && settings.backgroundAudioOrPipOnHome
+        onPipMetadataChanged(activeVideoWidth, activeVideoHeight, activeVideoRotation, activeForAutoPip)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
             runCatching {
                 val params = buildPlayerPictureInPictureParams(
@@ -963,9 +984,25 @@ fun VideoPlayerScreen(
                     height = activeVideoHeight,
                     rotationDegrees = activeVideoRotation,
                     isPlaying = isPlaying,
-                    autoEnterEnabled = isPlaying
+                    autoEnterEnabled = allowAutoPip
                 )
                 activity.setPictureInPictureParams(params)
+            }
+        }
+    }
+
+    // Explicitly disable Android 12+ Auto-PiP when leaving VideoPlayerScreen back to Home/Browser
+    DisposableEffect(activity) {
+        onDispose {
+            onPipMetadataChanged(0, 0, 0, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && activity != null) {
+                runCatching {
+                    activity.setPictureInPictureParams(
+                        PictureInPictureParams.Builder()
+                            .setAutoEnterEnabled(false)
+                            .build()
+                    )
+                }
             }
         }
     }
@@ -1647,16 +1684,19 @@ fun VideoPlayerScreen(
             }
         }
 
-        // Floating "+85s Skip Intro" Pill during the first 3 minutes of playback
-        val showSkipIntroPill = !isInPipMode &&
-            settings.showSkipIntroButton &&
+        // Floating "+85s Skip Intro" Pill during the first 3 minutes of playback (synced with Player HUD)
+        val showSkipIntroPill = settings.showSkipIntroButton &&
+            isControlsVisible &&
             !isScreenLocked &&
-            !skipIntroDismissed &&
-            currentPositionMs in 0L..180_000L
+            !isInPipMode &&
+            !isScrubbing &&
+            activeDrawer == PlayerDrawerType.NONE &&
+            currentPositionMs in 0L..180_000L &&
+            !skipIntroDismissed
         AnimatedVisibility(
             visible = showSkipIntroPill,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn(tween(220)) + slideInVertically { it / 2 },
+            exit = fadeOut(tween(200)) + slideOutVertically { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
@@ -1695,14 +1735,22 @@ fun VideoPlayerScreen(
             }
         }
 
-        // Floating "Next Episode" Pill during the final 30 seconds of a folder playlist video
+        // Floating "Up Next / Next Episode" Pill during the final 30 seconds (synced with Player HUD)
         val remainingMs = (durationMs - currentPositionMs).coerceAtLeast(0L)
         val hasNextEpisode = effectivePlaylist.size > 1 && currentIndex < effectivePlaylist.lastIndex
-        val showNextEpisodePill = !isInPipMode && hasNextEpisode && !isScreenLocked && remainingMs in 1L..30_000L
+        val isNearEndOfVideo = durationMs > 0L && remainingMs in 1L..30_000L
+        val showNextEpisodePill = settings.autoPlayNextEpisode &&
+            hasNextEpisode &&
+            isControlsVisible &&
+            !isScreenLocked &&
+            !isInPipMode &&
+            !isScrubbing &&
+            activeDrawer == PlayerDrawerType.NONE &&
+            isNearEndOfVideo
         AnimatedVisibility(
             visible = showNextEpisodePill,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn(tween(220)) + slideInVertically { it / 2 },
+            exit = fadeOut(tween(200)) + slideOutVertically { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
@@ -1766,18 +1814,25 @@ fun VideoPlayerScreen(
         // MAIN MX PLAYER HUD (Top Header + Second-Row Quick Ribbon + Bottom Seek/Transport)
         AnimatedVisibility(
             visible = !isInPipMode && isControlsVisible && !isScreenLocked && activeDrawer == PlayerDrawerType.NONE,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(200)),
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(2f)
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
+                val topHudAlpha by animateFloatAsState(
+                    targetValue = if (isScrubbing) 0f else 1f,
+                    animationSpec = tween(durationMillis = 150),
+                    label = "top_hud_scrub_fade"
+                )
+
                 // Top Gradient Scrim + Header Bar + Second-Row Circular Quick-Action Ribbon
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
+                        .graphicsLayer { alpha = topHudAlpha }
                         .background(
                             Brush.verticalGradient(
                                 listOf(
@@ -1788,6 +1843,7 @@ fun VideoPlayerScreen(
                             )
                         )
                         .clickable(
+                            enabled = !isScrubbing,
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                             onClick = { lastInteractionTick++ }
@@ -1915,341 +1971,406 @@ fun VideoPlayerScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     // 2. Second-Row Circular Quick-Action Ribbon (40.dp dark translucent circles)
-                    Row(
+                    val ribbonListState = rememberLazyListState()
+                    var hasExpandedRibbonOnce by remember { mutableStateOf(false) }
+                    val chevronRotation by animateFloatAsState(
+                        targetValue = if (isExtraRibbonExpanded) 180f else 0f,
+                        animationSpec = spring(dampingRatio = 0.75f, stiffness = 400f),
+                        label = "ribbon_expand_chevron_rotation"
+                    )
+                    val firstExpandedToolIndex = 6
+
+                    LaunchedEffect(isExtraRibbonExpanded) {
+                        if (isExtraRibbonExpanded) {
+                            hasExpandedRibbonOnce = true
+                            delay(120L)
+                            ribbonListState.animateScrollToItem(index = firstExpandedToolIndex)
+                        } else if (hasExpandedRibbonOnce) {
+                            delay(80L)
+                            ribbonListState.animateScrollToItem(index = 0)
+                        }
+                    }
+
+                    LazyRow(
+                        state = ribbonListState,
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
                             .testTag("player_quick_ribbon")
                     ) {
-                        // Equalizer
-                        FrostedCircleHudButton(
-                            icon = Icons.Filled.Equalizer,
-                            contentDescription = "Equalizer",
-                            size = 40.dp,
-                            iconSize = 20.dp,
-                            isActiveHighlight = eqPreset != EqPreset.NORMAL || bassBoostStrength > 0f,
-                            onClick = {
-                                activeDrawer = PlayerDrawerType.EQUALIZER
-                                lastInteractionTick++
-                            },
-                            modifier = Modifier.testTag("ribbon_equalizer_button")
-                        )
-
-                        // Playback Speed (1X)
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(if (showSpeedBar || playbackSpeed != 1.0f) PlayerSeekPeriwinkle.copy(alpha = 0.45f) else PlayerHudGlassBg)
-                                .border(1.dp, PlayerHudGlassBorder, CircleShape)
-                                .clickable {
-                                    showSpeedBar = !showSpeedBar
+                        // Index 0: Equalizer
+                        item(key = "equalizer") {
+                            FrostedCircleHudButton(
+                                icon = Icons.Filled.Equalizer,
+                                contentDescription = "Equalizer",
+                                size = 40.dp,
+                                iconSize = 20.dp,
+                                isActiveHighlight = eqPreset != EqPreset.NORMAL || bassBoostStrength > 0f,
+                                onClick = {
+                                    activeDrawer = PlayerDrawerType.EQUALIZER
                                     lastInteractionTick++
-                                }
-                                .testTag("playback_speed_button"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val speedLabel = if (playbackSpeed % 1f == 0f) {
-                                "${playbackSpeed.toInt()}X"
-                            } else {
-                                "${String.format(Locale.US, "%.1f", playbackSpeed)}X"
-                            }
-                            Text(
-                                text = speedLabel,
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                },
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .testTag("ribbon_equalizer_button")
                             )
                         }
 
-                        // Screenshot
-                        FrostedCircleHudButton(
-                            icon = Icons.Filled.CameraAlt,
-                            contentDescription = "Screenshot",
-                            size = 40.dp,
-                            iconSize = 19.dp,
-                            onClick = {
-                                lastInteractionTick++
-                                coroutineScope.launch {
-                                    val saved = captureFrameToPictures(context, currentVideo, currentPositionMs)
-                                    centerBanner = CenterBannerState.Toast(
-                                        if (saved) "Screenshot saved to Pictures" else "Unable to capture frame"
-                                    )
-                                }
-                            },
-                            modifier = Modifier.testTag("ribbon_screenshot_button")
-                        )
-
-                        // Background Play (Headphones)
-                        FrostedCircleHudButton(
-                            icon = Icons.Filled.Headset,
-                            contentDescription = "Background Play",
-                            size = 40.dp,
-                            iconSize = 19.dp,
-                            isActiveHighlight = backgroundAudioActive,
-                            onClick = {
-                                backgroundAudioActive = !backgroundAudioActive
-                                if (backgroundAudioActive) {
-                                    runCatching {
-                                        context.startService(Intent(context, PlaybackService::class.java))
+                        // Index 1: Playback Speed (1X)
+                        item(key = "speed") {
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(if (showSpeedBar || playbackSpeed != 1.0f) PlayerSeekPeriwinkle.copy(alpha = 0.45f) else PlayerHudGlassBg)
+                                    .border(1.dp, PlayerHudGlassBorder, CircleShape)
+                                    .clickable {
+                                        showSpeedBar = !showSpeedBar
+                                        lastInteractionTick++
                                     }
-                                }
-                                centerBanner = CenterBannerState.Toast(
-                                    if (backgroundAudioActive) "Background Play (MediaSession): ON" else "Background Play: OFF"
-                                )
-                                lastInteractionTick++
-                            },
-                            modifier = Modifier.testTag("background_audio_button")
-                        )
-
-                        // Screen Rotation
-                        FrostedCircleHudButton(
-                            icon = Icons.Filled.ScreenRotation,
-                            contentDescription = "Screen Rotation",
-                            size = 40.dp,
-                            iconSize = 19.dp,
-                            onClick = {
-                                manualOrientationOverridden = true
-                                isLandscape = !isLandscape
-                                activity?.requestedOrientation = if (isLandscape) {
-                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    .testTag("playback_speed_button"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val speedLabel = if (playbackSpeed % 1f == 0f) {
+                                    "${playbackSpeed.toInt()}X"
                                 } else {
-                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    "${String.format(Locale.US, "%.1f", playbackSpeed)}X"
                                 }
-                                lastInteractionTick++
-                            },
-                            modifier = Modifier.testTag("screen_rotation_button")
-                        )
-
-                        // Sleep Timer (Quick Ribbon shortcut)
-                        FrostedCircleHudButton(
-                            icon = Icons.Filled.Timer,
-                            contentDescription = "Sleep Timer",
-                            size = 40.dp,
-                            iconSize = 19.dp,
-                            isActiveHighlight = sleepTimerSelection != SleepTimerSelection.Off,
-                            onClick = {
-                                showSleepTimerDialog = true
-                                lastInteractionTick++
-                            },
-                            modifier = Modifier.testTag("ribbon_sleep_timer_button")
-                        )
-
-                        // Extra Shortcuts when expanded (`>`) including Frame-by-Frame, Night Tint, Shuffle, Loop, Mute, A-B Loop
-                        if (isExtraRibbonExpanded) {
-                            val exactFrameDurationMs = remember(currentVideo.frameRate) {
-                                (1000f / currentVideo.frameRate.coerceAtLeast(1f)).toLong().coerceAtLeast(16L)
-                            }
-
-                            // Previous Frame (<|)
-                            Box(
-                                modifier = Modifier
-                                    .height(40.dp)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(PlayerHudGlassBg)
-                                    .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(999.dp))
-                                    .clickable {
-                                        exoPlayer.pause()
-                                        val prevFramePos = (exoPlayer.currentPosition - exactFrameDurationMs).coerceAtLeast(0L)
-                                        exoPlayer.seekTo(prevFramePos)
-                                        currentPositionMs = prevFramePos
-                                        centerBanner = CenterBannerState.Toast("Frame -${exactFrameDurationMs}ms")
-                                        lastInteractionTick++
-                                    }
-                                    .padding(horizontal = 12.dp)
-                                    .testTag("ribbon_prev_frame_button"),
-                                contentAlignment = Alignment.Center
-                            ) {
                                 Text(
-                                    text = "<|",
+                                    text = speedLabel,
                                     color = Color.White,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
+                        }
 
-                            // Next Frame (|>)
-                            Box(
-                                modifier = Modifier
-                                    .height(40.dp)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(PlayerHudGlassBg)
-                                    .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(999.dp))
-                                    .clickable {
-                                        exoPlayer.pause()
-                                        val nextFramePos = (exoPlayer.currentPosition + exactFrameDurationMs).coerceAtMost(durationMs)
-                                        exoPlayer.seekTo(nextFramePos)
-                                        currentPositionMs = nextFramePos
-                                        centerBanner = CenterBannerState.Toast("Frame +${exactFrameDurationMs}ms")
-                                        lastInteractionTick++
-                                    }
-                                    .padding(horizontal = 12.dp)
-                                    .testTag("ribbon_next_frame_button"),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "|>",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-
-                            // Night Tint (warm amber blue-light filter overlay)
+                        // Index 2: Screenshot
+                        item(key = "screenshot") {
                             FrostedCircleHudButton(
-                                icon = Icons.Filled.DarkMode,
-                                contentDescription = "Night Tint",
+                                icon = Icons.Filled.CameraAlt,
+                                contentDescription = "Screenshot",
                                 size = 40.dp,
                                 iconSize = 19.dp,
-                                isActiveHighlight = nightModeActive,
                                 onClick = {
-                                    nightModeActive = !nightModeActive
+                                    lastInteractionTick++
+                                    coroutineScope.launch {
+                                        val saved = captureFrameToPictures(context, currentVideo, currentPositionMs)
+                                        centerBanner = CenterBannerState.Toast(
+                                            if (saved) "Screenshot saved to Pictures" else "Unable to capture frame"
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .testTag("ribbon_screenshot_button")
+                            )
+                        }
+
+                        // Index 3: Background Play (Headphones)
+                        item(key = "background_audio") {
+                            FrostedCircleHudButton(
+                                icon = Icons.Filled.Headset,
+                                contentDescription = "Background Play",
+                                size = 40.dp,
+                                iconSize = 19.dp,
+                                isActiveHighlight = backgroundAudioActive,
+                                onClick = {
+                                    backgroundAudioActive = !backgroundAudioActive
+                                    if (backgroundAudioActive) {
+                                        runCatching {
+                                            context.startService(Intent(context, PlaybackService::class.java))
+                                        }
+                                    }
                                     centerBanner = CenterBannerState.Toast(
-                                        if (nightModeActive) "Night Tint: ON" else "Night Tint: OFF"
+                                        if (backgroundAudioActive) "Background Play (MediaSession): ON" else "Background Play: OFF"
                                     )
                                     lastInteractionTick++
                                 },
-                                modifier = Modifier.testTag("ribbon_night_tint_button")
-                            )
-
-                            FrostedCircleHudButton(
-                                icon = Icons.Filled.Shuffle,
-                                contentDescription = "Shuffle",
-                                size = 40.dp,
-                                iconSize = 19.dp,
-                                isActiveHighlight = shuffleActive,
-                                onClick = {
-                                    shuffleActive = !shuffleActive
-                                    centerBanner = CenterBannerState.Toast(
-                                        if (shuffleActive) "Shuffle: ON" else "Shuffle: OFF"
-                                    )
-                                    lastInteractionTick++
-                                }
-                            )
-                            FrostedCircleHudButton(
-                                icon = if (loopSingleActive) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
-                                contentDescription = "Loop",
-                                size = 40.dp,
-                                iconSize = 19.dp,
-                                isActiveHighlight = loopSingleActive,
-                                onClick = {
-                                    loopSingleActive = !loopSingleActive
-                                    exoPlayer.repeatMode = if (loopSingleActive) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                                    centerBanner = CenterBannerState.Toast(
-                                        if (loopSingleActive) "Loop Current Video: ON" else "Loop: OFF"
-                                    )
-                                    lastInteractionTick++
-                                }
-                            )
-                            FrostedCircleHudButton(
-                                icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = "Mute",
-                                size = 40.dp,
-                                iconSize = 19.dp,
-                                isActiveHighlight = isMuted,
-                                onClick = {
-                                    isMuted = !isMuted
-                                    exoPlayer.volume = if (isMuted) 0f else 1f
-                                    centerBanner = CenterBannerState.Toast(
-                                        if (isMuted) "Muted" else "Audio Unmuted"
-                                    )
-                                    lastInteractionTick++
-                                }
-                            )
-
-                            // A–B Loop Repeater circular button (Repeat icon + A-B badge)
-                            Box(
                                 modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            abRepeatEndMs != null -> Color(0xFF22D3EE).copy(alpha = 0.35f)
-                                            abRepeatStartMs != null -> PlayerSeekPeriwinkle.copy(alpha = 0.45f)
-                                            else -> PlayerHudGlassBg
-                                        }
-                                    )
-                                    .border(
-                                        1.dp,
-                                        when {
-                                            abRepeatEndMs != null -> Color(0xFF22D3EE)
-                                            abRepeatStartMs != null -> PlayerSeekPeriwinkle
-                                            else -> PlayerHudGlassBorder
-                                        },
-                                        CircleShape
-                                    )
-                                    .clickable {
-                                        val livePos = exoPlayer.currentPosition.coerceAtLeast(0L)
-                                        when {
-                                            abRepeatStartMs == null -> {
-                                                abRepeatStartMs = livePos
-                                                centerBanner = CenterBannerState.Toast("Point A set")
-                                            }
-                                            abRepeatEndMs == null -> {
-                                                val startA = abRepeatStartMs!!
-                                                if (abs(livePos - startA) < 300L) {
-                                                    centerBanner = CenterBannerState.Toast("Move playhead past A")
-                                                } else if (livePos < startA) {
-                                                    abRepeatStartMs = livePos
-                                                    abRepeatEndMs = startA
-                                                    centerBanner = CenterBannerState.Toast("A–B loop active")
-                                                } else {
-                                                    abRepeatEndMs = livePos
-                                                    centerBanner = CenterBannerState.Toast("A–B loop active")
-                                                }
-                                            }
-                                            else -> {
-                                                abRepeatStartMs = null
-                                                abRepeatEndMs = null
-                                                centerBanner = CenterBannerState.Toast("A–B loop cleared")
-                                            }
-                                        }
-                                        lastInteractionTick++
+                                    .padding(end = 10.dp)
+                                    .testTag("background_audio_button")
+                            )
+                        }
+
+                        // Index 4: Screen Rotation
+                        item(key = "rotation") {
+                            FrostedCircleHudButton(
+                                icon = Icons.Filled.ScreenRotation,
+                                contentDescription = "Screen Rotation",
+                                size = 40.dp,
+                                iconSize = 19.dp,
+                                onClick = {
+                                    manualOrientationOverridden = true
+                                    isLandscape = !isLandscape
+                                    activity?.requestedOrientation = if (isLandscape) {
+                                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    } else {
+                                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                                     }
-                                    .testTag("ribbon_ab_loop_button"),
-                                contentAlignment = Alignment.Center
+                                    lastInteractionTick++
+                                },
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .testTag("screen_rotation_button")
+                            )
+                        }
+
+                        // Index 5: Sleep Timer (Quick Ribbon shortcut)
+                        item(key = "sleep_timer") {
+                            FrostedCircleHudButton(
+                                icon = Icons.Filled.Timer,
+                                contentDescription = "Sleep Timer",
+                                size = 40.dp,
+                                iconSize = 19.dp,
+                                isActiveHighlight = sleepTimerSelection != SleepTimerSelection.Off,
+                                onClick = {
+                                    showSleepTimerDialog = true
+                                    lastInteractionTick++
+                                },
+                                modifier = Modifier
+                                    .padding(end = 10.dp)
+                                    .testTag("ribbon_sleep_timer_button")
+                            )
+                        }
+
+                        // Index 6: Animated Expandable Extra Shortcuts (`<|`, `|>`, Night Tint, Shuffle, Loop, Mute, A-B Loop)
+                        item(key = "expanded_tools") {
+                            AnimatedVisibility(
+                                visible = isExtraRibbonExpanded,
+                                enter = expandHorizontally(
+                                    animationSpec = spring(dampingRatio = 0.8f, stiffness = 380f)
+                                ) + fadeIn(animationSpec = tween(220)) + slideInHorizontally(
+                                    animationSpec = spring(dampingRatio = 0.8f, stiffness = 380f)
+                                ) { it / 3 },
+                                exit = shrinkHorizontally(
+                                    animationSpec = spring(dampingRatio = 0.8f, stiffness = 380f)
+                                ) + fadeOut(animationSpec = tween(180))
                             ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Repeat,
-                                    contentDescription = "A-B Loop",
-                                    tint = Color.White,
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .offset(y = (-4).dp)
-                                )
-                                Text(
-                                    text = when {
-                                        abRepeatEndMs != null -> "A-B"
-                                        abRepeatStartMs != null -> "A→"
-                                        else -> "A-B"
-                                    },
-                                    color = if (abRepeatStartMs != null) Color(0xFF22D3EE) else Color.White,
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.offset(y = 8.dp)
-                                )
+                                val exactFrameDurationMs = remember(currentVideo.frameRate) {
+                                    (1000f / currentVideo.frameRate.coerceAtLeast(1f)).toLong().coerceAtLeast(16L)
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Previous Frame (<|)
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(end = 10.dp)
+                                            .height(40.dp)
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(PlayerHudGlassBg)
+                                            .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(999.dp))
+                                            .clickable {
+                                                exoPlayer.pause()
+                                                val prevFramePos = (exoPlayer.currentPosition - exactFrameDurationMs).coerceAtLeast(0L)
+                                                exoPlayer.seekTo(prevFramePos)
+                                                currentPositionMs = prevFramePos
+                                                centerBanner = CenterBannerState.Toast("Frame -${exactFrameDurationMs}ms")
+                                                lastInteractionTick++
+                                            }
+                                            .padding(horizontal = 12.dp)
+                                            .testTag("ribbon_prev_frame_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "<|",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    // Next Frame (|>)
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(end = 10.dp)
+                                            .height(40.dp)
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(PlayerHudGlassBg)
+                                            .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(999.dp))
+                                            .clickable {
+                                                exoPlayer.pause()
+                                                val nextFramePos = (exoPlayer.currentPosition + exactFrameDurationMs).coerceAtMost(durationMs)
+                                                exoPlayer.seekTo(nextFramePos)
+                                                currentPositionMs = nextFramePos
+                                                centerBanner = CenterBannerState.Toast("Frame +${exactFrameDurationMs}ms")
+                                                lastInteractionTick++
+                                            }
+                                            .padding(horizontal = 12.dp)
+                                            .testTag("ribbon_next_frame_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "|>",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    // Night Tint (warm amber blue-light filter overlay)
+                                    FrostedCircleHudButton(
+                                        icon = Icons.Filled.DarkMode,
+                                        contentDescription = "Night Tint",
+                                        size = 40.dp,
+                                        iconSize = 19.dp,
+                                        isActiveHighlight = nightModeActive,
+                                        onClick = {
+                                            nightModeActive = !nightModeActive
+                                            centerBanner = CenterBannerState.Toast(
+                                                if (nightModeActive) "Night Tint: ON" else "Night Tint: OFF"
+                                            )
+                                            lastInteractionTick++
+                                        },
+                                        modifier = Modifier
+                                            .padding(end = 10.dp)
+                                            .testTag("ribbon_night_tint_button")
+                                    )
+
+                                    FrostedCircleHudButton(
+                                        icon = Icons.Filled.Shuffle,
+                                        contentDescription = "Shuffle",
+                                        size = 40.dp,
+                                        iconSize = 19.dp,
+                                        isActiveHighlight = shuffleActive,
+                                        onClick = {
+                                            shuffleActive = !shuffleActive
+                                            centerBanner = CenterBannerState.Toast(
+                                                if (shuffleActive) "Shuffle: ON" else "Shuffle: OFF"
+                                            )
+                                            lastInteractionTick++
+                                        },
+                                        modifier = Modifier.padding(end = 10.dp)
+                                    )
+
+                                    FrostedCircleHudButton(
+                                        icon = if (loopSingleActive) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                                        contentDescription = "Loop",
+                                        size = 40.dp,
+                                        iconSize = 19.dp,
+                                        isActiveHighlight = loopSingleActive,
+                                        onClick = {
+                                            loopSingleActive = !loopSingleActive
+                                            exoPlayer.repeatMode = if (loopSingleActive) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                                            centerBanner = CenterBannerState.Toast(
+                                                if (loopSingleActive) "Loop Current Video: ON" else "Loop: OFF"
+                                            )
+                                            lastInteractionTick++
+                                        },
+                                        modifier = Modifier.padding(end = 10.dp)
+                                    )
+
+                                    FrostedCircleHudButton(
+                                        icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                        contentDescription = "Mute",
+                                        size = 40.dp,
+                                        iconSize = 19.dp,
+                                        isActiveHighlight = isMuted,
+                                        onClick = {
+                                            isMuted = !isMuted
+                                            exoPlayer.volume = if (isMuted) 0f else 1f
+                                            centerBanner = CenterBannerState.Toast(
+                                                if (isMuted) "Muted" else "Audio Unmuted"
+                                            )
+                                            lastInteractionTick++
+                                        },
+                                        modifier = Modifier.padding(end = 10.dp)
+                                    )
+
+                                    // A–B Loop Repeater circular button (Repeat icon + A-B badge)
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(end = 10.dp)
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                when {
+                                                    abRepeatEndMs != null -> Color(0xFF22D3EE).copy(alpha = 0.35f)
+                                                    abRepeatStartMs != null -> PlayerSeekPeriwinkle.copy(alpha = 0.45f)
+                                                    else -> PlayerHudGlassBg
+                                                }
+                                            )
+                                            .border(
+                                                1.dp,
+                                                when {
+                                                    abRepeatEndMs != null -> Color(0xFF22D3EE)
+                                                    abRepeatStartMs != null -> PlayerSeekPeriwinkle
+                                                    else -> PlayerHudGlassBorder
+                                                },
+                                                CircleShape
+                                            )
+                                            .clickable {
+                                                val livePos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                                                when {
+                                                    abRepeatStartMs == null -> {
+                                                        abRepeatStartMs = livePos
+                                                        centerBanner = CenterBannerState.Toast("Point A set")
+                                                    }
+                                                    abRepeatEndMs == null -> {
+                                                        val startA = abRepeatStartMs!!
+                                                        if (abs(livePos - startA) < 300L) {
+                                                            centerBanner = CenterBannerState.Toast("Move playhead past A")
+                                                        } else if (livePos < startA) {
+                                                            abRepeatStartMs = livePos
+                                                            abRepeatEndMs = startA
+                                                            centerBanner = CenterBannerState.Toast("A–B loop active")
+                                                        } else {
+                                                            abRepeatEndMs = livePos
+                                                            centerBanner = CenterBannerState.Toast("A–B loop active")
+                                                        }
+                                                    }
+                                                    else -> {
+                                                        abRepeatStartMs = null
+                                                        abRepeatEndMs = null
+                                                        centerBanner = CenterBannerState.Toast("A–B loop cleared")
+                                                    }
+                                                }
+                                                lastInteractionTick++
+                                            }
+                                            .testTag("ribbon_ab_loop_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Repeat,
+                                            contentDescription = "A-B Loop",
+                                            tint = Color.White,
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .offset(y = (-4).dp)
+                                        )
+                                        Text(
+                                            text = when {
+                                                abRepeatEndMs != null -> "A-B"
+                                                abRepeatStartMs != null -> "A→"
+                                                else -> "A-B"
+                                            },
+                                            color = if (abRepeatStartMs != null) Color(0xFF22D3EE) else Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            modifier = Modifier.offset(y = 8.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
 
-                        // Expandable > / < Button
-                        FrostedCircleHudButton(
-                            icon = if (isExtraRibbonExpanded) {
-                                Icons.AutoMirrored.Filled.KeyboardArrowLeft
-                            } else {
-                                Icons.AutoMirrored.Filled.KeyboardArrowRight
-                            },
-                            contentDescription = "Expand Quick Tools",
-                            size = 40.dp,
-                            iconSize = 20.dp,
-                            onClick = {
-                                isExtraRibbonExpanded = !isExtraRibbonExpanded
-                                lastInteractionTick++
-                            },
-                            modifier = Modifier.testTag("ribbon_expand_button")
-                        )
+                        // Index 7: Smoothly Rotating Expand/Collapse Chevron Button
+                        item(key = "expand_toggle") {
+                            FrostedCircleHudButton(
+                                icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = if (isExtraRibbonExpanded) "Collapse Quick Tools" else "Expand Quick Tools",
+                                size = 40.dp,
+                                iconSize = 20.dp,
+                                iconModifier = Modifier.graphicsLayer { rotationZ = chevronRotation },
+                                onClick = {
+                                    isExtraRibbonExpanded = !isExtraRibbonExpanded
+                                    lastInteractionTick++
+                                },
+                                modifier = Modifier.testTag("ribbon_expand_button")
+                            )
+                        }
                     }
 
                     // Live Sleep Timer Countdown Badge inside HUD
@@ -2331,61 +2452,34 @@ fun VideoPlayerScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     val displayedPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
-                    // Seek Row: Left Timestamp + Sky-Blue (#58A6FF) Slider with Chapter Markers + Right Total Duration
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                    // Seek Row: Left Timestamp + Sky-Blue (#58A6FF) Slider with Thumb-Anchored Tooltip + Right Total Duration
+                    SeekBarWithFloatingTooltip(
+                        displayedPosMs = displayedPosMs,
+                        durationMs = durationMs,
+                        isPlaying = isPlaying && !isScrubbing,
+                        isScrubbing = isScrubbing,
+                        chapters = chapters,
+                        abLoopStartMs = abRepeatStartMs,
+                        abLoopEndMs = abRepeatEndMs,
+                        onSeekStartOrUpdate = { targetMs ->
+                            isScrubbing = true
+                            scrubPositionMs = targetMs
+                            centerBanner = null
+                            lastInteractionTick++
+                        },
+                        onSeekCommit = { targetMs ->
+                            isScrubbing = true
+                            scrubPositionMs = targetMs
+                            currentPositionMs = targetMs
+                            exoPlayer.seekTo(targetMs)
+                            centerBanner = null
+                            lastInteractionTick++
+                            isScrubbing = false
+                        },
+                        seekBarTestTag = "player_seek_slider",
+                        showTimestamps = true,
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = formatDurationMillis(displayedPosMs),
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        WavyVideoSeekBar(
-                            currentMs = displayedPosMs,
-                            durationMs = durationMs,
-                            isPlaying = isPlaying && !isScrubbing,
-                            chapters = chapters,
-                            abLoopStartMs = abRepeatStartMs,
-                            abLoopEndMs = abRepeatEndMs,
-                            onSeekStartOrUpdate = { targetMs ->
-                                isScrubbing = true
-                                scrubPositionMs = targetMs
-                                val chapter = findChapterForPosition(chapters, targetMs)
-                                centerBanner = CenterBannerState.Scrub(
-                                    targetTimeMs = targetMs,
-                                    deltaMs = 0L,
-                                    chapterTitle = chapter?.title
-                                )
-                                lastInteractionTick++
-                            },
-                            onSeekCommit = { targetMs ->
-                                isScrubbing = true
-                                scrubPositionMs = targetMs
-                                currentPositionMs = targetMs
-                                exoPlayer.seekTo(targetMs)
-                                centerBanner = null
-                                lastInteractionTick++
-                                isScrubbing = false
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("player_seek_slider")
-                        )
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Text(
-                            text = formatDurationMillis(durationMs),
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                    )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -2506,7 +2600,7 @@ fun VideoPlayerScreen(
                                                 height = activeVideoHeight,
                                                 rotationDegrees = activeVideoRotation,
                                                 isPlaying = isPlaying,
-                                                autoEnterEnabled = isPlaying
+                                                autoEnterEnabled = isPlaying && !isScreenLocked && settings.backgroundAudioOrPipOnHome
                                             )
                                             activity.enterPictureInPictureMode(pipParams)
                                         } catch (_: Exception) {
@@ -2572,25 +2666,28 @@ fun VideoPlayerScreen(
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            WavyVideoSeekBar(
-                currentMs = currentPositionMs,
+            val hiddenBarPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
+            SeekBarWithFloatingTooltip(
+                displayedPosMs = hiddenBarPosMs,
                 durationMs = durationMs,
-                isPlaying = isPlaying,
+                isPlaying = isPlaying && !isScrubbing,
+                isScrubbing = isScrubbing,
                 chapters = chapters,
                 abLoopStartMs = abRepeatStartMs,
                 abLoopEndMs = abRepeatEndMs,
                 onSeekStartOrUpdate = { targetMs ->
                     isScrubbing = true
                     scrubPositionMs = targetMs
+                    centerBanner = null
                 },
                 onSeekCommit = { targetMs ->
                     currentPositionMs = targetMs
                     exoPlayer.seekTo(targetMs)
                     isScrubbing = false
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("hidden_controls_wavy_seekbar")
+                seekBarTestTag = "hidden_controls_wavy_seekbar",
+                showTimestamps = false,
+                modifier = Modifier.fillMaxWidth()
             )
         }
 
@@ -3338,6 +3435,7 @@ private fun FrostedCircleHudButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     iconSize: Dp = 20.dp,
+    iconModifier: Modifier = Modifier,
     isActiveHighlight: Boolean = false
 ) {
     val bg = if (isActiveHighlight) {
@@ -3363,8 +3461,146 @@ private fun FrostedCircleHudButton(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = Color.White,
-            modifier = Modifier.size(iconSize)
+            modifier = Modifier
+                .size(iconSize)
+                .then(iconModifier)
         )
+    }
+}
+
+/**
+ * Wraps [WavyVideoSeekBar] with an optional timestamp row and a compact Liquid Glass
+ * single-pill preview tooltip (`zIndex(10f)`) anchored directly above the active scrub thumb.
+ */
+@Composable
+private fun SeekBarWithFloatingTooltip(
+    displayedPosMs: Long,
+    durationMs: Long,
+    isPlaying: Boolean,
+    isScrubbing: Boolean,
+    chapters: List<VideoChapter>,
+    abLoopStartMs: Long?,
+    abLoopEndMs: Long?,
+    onSeekStartOrUpdate: (Long) -> Unit,
+    onSeekCommit: (Long) -> Unit,
+    seekBarTestTag: String,
+    showTimestamps: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    var containerWidthPx by remember { mutableIntStateOf(0) }
+    var seekbarStartX by remember { mutableFloatStateOf(0f) }
+    var seekbarWidthPx by remember { mutableFloatStateOf(0f) }
+    var tooltipWidthPx by remember { mutableIntStateOf(with(density) { 120.dp.roundToPx() }) }
+    var tooltipHeightPx by remember { mutableIntStateOf(with(density) { 30.dp.roundToPx() }) }
+
+    Box(
+        modifier = modifier.onSizeChanged { containerWidthPx = it.width }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (showTimestamps) {
+                Text(
+                    text = formatDurationMillis(displayedPosMs),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+            }
+
+            WavyVideoSeekBar(
+                currentMs = displayedPosMs,
+                durationMs = durationMs,
+                isPlaying = isPlaying,
+                chapters = chapters,
+                abLoopStartMs = abLoopStartMs,
+                abLoopEndMs = abLoopEndMs,
+                onSeekStartOrUpdate = onSeekStartOrUpdate,
+                onSeekCommit = onSeekCommit,
+                modifier = Modifier
+                    .weight(1f)
+                    .onGloballyPositioned { coords ->
+                        seekbarStartX = coords.positionInParent().x
+                        seekbarWidthPx = coords.size.width.toFloat()
+                    }
+                    .testTag(seekBarTestTag)
+            )
+
+            if (showTimestamps) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = formatDurationMillis(durationMs),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        if (isScrubbing && seekbarWidthPx > 0f) {
+            val safeDuration = durationMs.coerceAtLeast(1000L)
+            val fraction = (displayedPosMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+            val strokePx = with(density) { 4.dp.toPx() }
+            val trackStart = strokePx / 2f
+            val trackEnd = (seekbarWidthPx - strokePx / 2f).coerceAtLeast(trackStart + 1f)
+            val usableWidth = (trackEnd - trackStart).coerceAtLeast(1f)
+            val thumbCenterX = seekbarStartX + (trackStart + usableWidth * fraction).coerceIn(trackStart, trackEnd)
+
+            val desiredX = (thumbCenterX - tooltipWidthPx / 2f).roundToInt()
+            val maxX = (containerWidthPx - tooltipWidthPx).coerceAtLeast(0)
+            val clampedX = desiredX.coerceIn(0, maxX)
+            val gapPx = with(density) { 10.dp.roundToPx() }
+            val tooltipY = -(tooltipHeightPx + gapPx)
+
+            val activeChapter = remember(chapters, displayedPosMs) {
+                findChapterForPosition(chapters, displayedPosMs)
+            }
+            val tooltipText = buildString {
+                if (!activeChapter?.title.isNullOrBlank()) {
+                    append(activeChapter?.title)
+                    append(" • ")
+                }
+                append(formatDurationMillis(displayedPosMs))
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .zIndex(10f)
+                    .onSizeChanged {
+                        tooltipWidthPx = it.width
+                        tooltipHeightPx = it.height
+                    }
+                    .offset { IntOffset(x = clampedX, y = tooltipY) }
+                    .widthIn(max = 260.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color(0xFF0F172A).copy(alpha = 0.84f))
+                    .border(
+                        width = 1.dp,
+                        brush = Brush.linearGradient(
+                            listOf(
+                                Color.White.copy(alpha = 0.45f),
+                                PlayerSeekPeriwinkle.copy(alpha = 0.65f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(999.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .testTag("seekbar_preview_tooltip")
+            ) {
+                Text(
+                    text = tooltipText,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 

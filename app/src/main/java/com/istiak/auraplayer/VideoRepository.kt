@@ -49,7 +49,8 @@ data class VideoItem(
     val rotationDegrees: Int = 0,
     val dateModifiedSec: Long = dateAddedSec,
     val isNew: Boolean = false,
-    val storageVolumeId: String = PRIMARY_STORAGE_VOLUME_ID
+    val storageVolumeId: String = PRIMARY_STORAGE_VOLUME_ID,
+    val filePath: String? = null
 ) {
     fun effectiveVisualDimensions(): Pair<Int, Int> {
         val normalizedRot = ((rotationDegrees % 360) + 360) % 360
@@ -756,7 +757,8 @@ class VideoRepository(private val context: Context) {
                                 rotationDegrees = rotationDegrees,
                                 dateModifiedSec = dateModified,
                                 isNew = isNewVideo,
-                                storageVolumeId = volumeId
+                                storageVolumeId = volumeId,
+                                filePath = dataPath
                             )
                         )
                     }

@@ -53,7 +53,6 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.SdStorage
 import androidx.compose.material.icons.filled.SearchOff
@@ -1917,7 +1916,7 @@ fun DirectoryVideoRow(
     isSelected: Boolean = false,
     onPlay: () -> Unit,
     onLongPress: () -> Unit = {},
-    onOpenActionSheet: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onOpenActionSheet: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1946,7 +1945,7 @@ fun DirectoryVideoRow(
                     onLongPress()
                 }
             )
-            .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
             .testTag("video_row_${video.id}")
     ) {
         if (DisplayField.THUMBNAILS in settings.enabledFields) {
@@ -1957,10 +1956,26 @@ fun DirectoryVideoRow(
                     .clip(RoundedCornerShape(10.dp))
                     .background(palette.neutralChipBg)
             ) {
+                val thumbnailKey = remember(
+                    video.id,
+                    video.uri,
+                    video.filePath,
+                    video.vaultFilePath,
+                    video.durationMs,
+                    video.dateModifiedSec,
+                    video.isVaultItem
+                ) {
+                    VideoThumbnailKey(
+                        uri = video.uri,
+                        filePath = video.filePath ?: video.vaultFilePath,
+                        durationMs = video.durationMs,
+                        dateModifiedSec = video.dateModifiedSec,
+                        isVaultItem = video.isVaultItem
+                    )
+                }
                 AsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(video.uri)
-                        .videoFrameMillis(1200L)
+                        .data(thumbnailKey)
                         .build(),
                     imageLoader = imageLoader,
                     contentDescription = video.displayName,
@@ -2078,20 +2093,6 @@ fun DirectoryVideoRow(
                 }
             }
         }
-
-        IconButton(
-            onClick = onOpenActionSheet,
-            modifier = Modifier
-                .size(48.dp)
-                .testTag("video_overflow_${video.id}")
-        ) {
-            Icon(
-                imageVector = Icons.Filled.MoreVert,
-                contentDescription = "More options",
-                tint = palette.secondaryText,
-                modifier = Modifier.size(20.dp)
-            )
-        }
     }
 }
 
@@ -2104,7 +2105,7 @@ fun DirectoryVideoGridCard(
     isSelected: Boolean = false,
     onPlay: () -> Unit,
     onLongPress: () -> Unit = {},
-    onOpenMenu: () -> Unit
+    @Suppress("UNUSED_PARAMETER") onOpenMenu: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
@@ -2136,10 +2137,26 @@ fun DirectoryVideoGridCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(palette.neutralChipBg)
         ) {
+            val thumbnailKey = remember(
+                video.id,
+                video.uri,
+                video.filePath,
+                video.vaultFilePath,
+                video.durationMs,
+                video.dateModifiedSec,
+                video.isVaultItem
+            ) {
+                VideoThumbnailKey(
+                    uri = video.uri,
+                    filePath = video.filePath ?: video.vaultFilePath,
+                    durationMs = video.durationMs,
+                    dateModifiedSec = video.dateModifiedSec,
+                    isVaultItem = video.isVaultItem
+                )
+            }
             AsyncImage(
                 model = ImageRequest.Builder(context)
-                    .data(video.uri)
-                    .videoFrameMillis(1200L)
+                    .data(thumbnailKey)
                     .build(),
                 imageLoader = imageLoader,
                 contentDescription = video.title,
@@ -2184,28 +2201,15 @@ fun DirectoryVideoGridCard(
             }
         }
         Spacer(modifier = Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = video.displayName,
-                color = palette.primaryText,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(
-                onClick = onOpenMenu,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "More options",
-                    tint = palette.secondaryText,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
+        Text(
+            text = video.displayName,
+            color = palette.primaryText,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(modifier = Modifier.height(4.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(4.dp),

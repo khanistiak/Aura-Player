@@ -693,10 +693,26 @@ private fun ThumbnailTabContent(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
+                        val thumbnailKey = remember(
+                            video.id,
+                            video.uri,
+                            video.filePath,
+                            video.vaultFilePath,
+                            video.durationMs,
+                            video.dateModifiedSec,
+                            video.isVaultItem
+                        ) {
+                            VideoThumbnailKey(
+                                uri = video.uri,
+                                filePath = video.filePath ?: video.vaultFilePath,
+                                durationMs = video.durationMs,
+                                dateModifiedSec = video.dateModifiedSec,
+                                isVaultItem = video.isVaultItem
+                            )
+                        }
                         AsyncImage(
                             model = ImageRequest.Builder(context)
-                                .data(video.uri)
-                                .videoFrameMillis(1200L)
+                                .data(thumbnailKey)
                                 .build(),
                             imageLoader = imageLoader,
                             contentDescription = "Video thumbnail",

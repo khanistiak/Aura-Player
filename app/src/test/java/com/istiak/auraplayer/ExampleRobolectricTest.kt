@@ -702,28 +702,40 @@ class ExampleRobolectricTest {
             "https://api.github.com/repos/khanistiak/Aura-Player/releases/latest",
             GITHUB_LATEST_RELEASE_API
         )
-        assertTrue(AppUpdateManager.isNewerVersion("2.6.0", "2.5.0"))
-        assertTrue(AppUpdateManager.isNewerVersion("v2.6.0", "1.0"))
-        assertFalse(AppUpdateManager.isNewerVersion("2.5.0", "2.5.0"))
-        assertFalse(AppUpdateManager.isNewerVersion("2.4.9", "2.5.0"))
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = AppUpdateManager(context)
+        assertEquals("2.6.1", manager.getInstalledVersionName(context))
+
+        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.1"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.2", "2.6.1"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.1", "2.6.1"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.1-rc1", "2.6.1"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6", "2.6.0"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.5.9", "2.6.1"))
+
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.1", ""))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.1", "v2.7.0"))
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.1", "2.6.1", "v2.7.0"))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.6.1", "2.6.1", ""))
 
         val sampleJson = """
             {
-              "tag_name": "v2.6.0",
-              "name": "Aura Player v2.6.0",
+              "tag_name": "v2.7.0",
+              "name": "Aura Player v2.7.0",
               "published_at": "2026-11-16T18:00:00Z",
               "body": "[critical]\n- Added Liquid Glass update bottom sheet\n- Improved 4K HEVC playback",
-              "html_url": "https://github.com/khanistiak/Aura-Player/releases/tag/v2.6.0",
+              "html_url": "https://github.com/khanistiak/Aura-Player/releases/tag/v2.7.0",
               "assets": [
                 {
                   "name": "checksums.txt",
                   "size": 128,
-                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.6.0/checksums.txt"
+                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.7.0/checksums.txt"
                 },
                 {
-                  "name": "AuraPlayer-v2.6.0-release.apk",
+                  "name": "AuraPlayer-v2.7.0-release.apk",
                   "size": 19293798,
-                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.6.0/AuraPlayer-v2.6.0-release.apk"
+                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.7.0/AuraPlayer-v2.7.0-release.apk"
                 }
               ]
             }
@@ -731,18 +743,23 @@ class ExampleRobolectricTest {
 
         val parsed = AppUpdateManager.parseReleaseJson(sampleJson)
         assertTrue(parsed != null)
-        assertEquals("2.6.0", parsed!!.version)
+        assertEquals("2.7.0", parsed!!.version)
         assertEquals("November 2026", parsed.publishedMonthYear)
         assertTrue(parsed.isCritical)
-        assertEquals("AuraPlayer-v2.6.0-release.apk", parsed.apkFileName)
+        assertEquals("AuraPlayer-v2.7.0-release.apk", parsed.apkFileName)
         assertEquals(19293798L, parsed.apkSizeBytes)
         assertEquals("18.4 MB", parsed.formattedSize)
         assertEquals(2, parsed.changelogLines.size)
 
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = AppUpdateManager(context)
         val targetApk = manager.getTargetApkFile()
         assertEquals("AuraPlayer-update.apk", targetApk.name)
+    }
+
+    @Test
+    fun `default settings enable skip intro button and autoplay next episode`() {
+        val defaults = AppSettingsState()
+        assertTrue(defaults.showSkipIntroButton)
+        assertTrue(defaults.autoPlayNextEpisode)
     }
 }
 
