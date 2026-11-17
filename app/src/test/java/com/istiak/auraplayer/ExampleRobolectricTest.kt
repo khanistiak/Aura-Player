@@ -695,5 +695,55 @@ class ExampleRobolectricTest {
         val hwDecoders = countHardwareVideoDecoders()
         assertTrue(hwDecoders >= 0)
     }
+
+    @Test
+    fun `github release updater parses latest apk asset and compares semantic versions`() {
+        assertEquals(
+            "https://api.github.com/repos/khanistiak/Aura-Player/releases/latest",
+            GITHUB_LATEST_RELEASE_API
+        )
+        assertTrue(AppUpdateManager.isNewerVersion("2.6.0", "2.5.0"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.0", "1.0"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.5.0", "2.5.0"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.4.9", "2.5.0"))
+
+        val sampleJson = """
+            {
+              "tag_name": "v2.6.0",
+              "name": "Aura Player v2.6.0",
+              "published_at": "2026-11-16T18:00:00Z",
+              "body": "[critical]\n- Added Liquid Glass update bottom sheet\n- Improved 4K HEVC playback",
+              "html_url": "https://github.com/khanistiak/Aura-Player/releases/tag/v2.6.0",
+              "assets": [
+                {
+                  "name": "checksums.txt",
+                  "size": 128,
+                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.6.0/checksums.txt"
+                },
+                {
+                  "name": "AuraPlayer-v2.6.0-release.apk",
+                  "size": 19293798,
+                  "browser_download_url": "https://github.com/khanistiak/Aura-Player/releases/download/v2.6.0/AuraPlayer-v2.6.0-release.apk"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = AppUpdateManager.parseReleaseJson(sampleJson)
+        assertTrue(parsed != null)
+        assertEquals("2.6.0", parsed!!.version)
+        assertEquals("November 2026", parsed.publishedMonthYear)
+        assertTrue(parsed.isCritical)
+        assertEquals("AuraPlayer-v2.6.0-release.apk", parsed.apkFileName)
+        assertEquals(19293798L, parsed.apkSizeBytes)
+        assertEquals("18.4 MB", parsed.formattedSize)
+        assertEquals(2, parsed.changelogLines.size)
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = AppUpdateManager(context)
+        val targetApk = manager.getTargetApkFile()
+        assertEquals("AuraPlayer-update.apk", targetApk.name)
+    }
 }
+
 

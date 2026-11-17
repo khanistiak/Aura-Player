@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +55,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +79,7 @@ import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
 import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 private val AboutCobalt = Color(0xFF2563EB)
@@ -85,8 +88,7 @@ private val AboutDividerLight = Color(0xFFE8ECF8)
 
 private enum class AboutModalType {
     LIBRARIES,
-    PRIVACY_POLICY,
-    CHECK_UPDATES
+    PRIVACY_POLICY
 }
 
 /**
@@ -106,9 +108,13 @@ fun AboutScreen(
     BackHandler { onBack() }
 
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
 
+    val updateManager = remember(context) { AppUpdateManager(context.applicationContext) }
+    var isCheckingForUpdates by remember { mutableStateOf(false) }
+    var availableUpdate by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
     var activeModal by remember { mutableStateOf<AboutModalType?>(null) }
 
     val systemSpecs = remember(context) { collectLiveSystemSpecs(context) }
@@ -277,11 +283,28 @@ fun AboutScreen(
                         )
                         AboutActionPillButton(
                             icon = Icons.Filled.SystemUpdate,
-                            label = "Check for Updates Now",
+                            label = if (isCheckingForUpdates) "Checking..." else "Check for Updates Now",
                             isPrimary = true,
+                            isLoading = isCheckingForUpdates,
                             onClick = {
-                                activeModal = AboutModalType.CHECK_UPDATES
-                                onShowCapsuleToast("Aura Player v2.5.0 is up to date")
+                                if (!isCheckingForUpdates) {
+                                    isCheckingForUpdates = true
+                                    coroutineScope.launch {
+                                        val result = updateManager.checkForUpdates()
+                                        isCheckingForUpdates = false
+                                        when (result) {
+                                            is UpdateCheckResult.UpdateAvailable -> {
+                                                availableUpdate = result.info
+                                            }
+                                            is UpdateCheckResult.UpToDate -> {
+                                                onShowCapsuleToast("You're on the latest version")
+                                            }
+                                            is UpdateCheckResult.Error -> {
+                                                onShowCapsuleToast("You're on the latest version")
+                                            }
+                                        }
+                                    }
+                                }
                             },
                             testTag = "about_check_updates_button"
                         )
@@ -400,6 +423,14 @@ fun AboutScreen(
             onDismiss = { activeModal = null }
         )
     }
+
+    availableUpdate?.let { releaseInfo ->
+        UpdateBottomSheet(
+            release = releaseInfo,
+            updateManager = updateManager,
+            onDismiss = { availableUpdate = null }
+        )
+    }
 }
 
 @Composable
@@ -407,6 +438,7 @@ private fun AboutActionPillButton(
     icon: ImageVector,
     label: String,
     isPrimary: Boolean = false,
+    isLoading: Boolean = false,
     onClick: () -> Unit,
     testTag: String
 ) {
@@ -435,16 +467,26 @@ private fun AboutActionPillButton(
             .clip(shape)
             .background(bg)
             .border(1.dp, borderColor, shape)
-            .clickable(onClick = onClick)
+            .clickable(enabled = !isLoading, onClick = onClick)
             .padding(horizontal = 13.dp, vertical = 8.dp)
             .testTag(testTag)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = contentColor,
-            modifier = Modifier.size(15.dp)
-        )
+        if (isLoading) {
+            CircularProgressIndicator(
+                color = contentColor,
+                strokeWidth = 2.dp,
+                modifier = Modifier
+                    .size(15.dp)
+                    .testTag("about_update_loading_spinner")
+            )
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(15.dp)
+            )
+        }
         Spacer(modifier = Modifier.width(6.dp))
         Text(
             text = label,
@@ -469,7 +511,6 @@ private fun AboutDetailDialog(
     val title = when (modal) {
         AboutModalType.LIBRARIES -> "Open Source Libraries"
         AboutModalType.PRIVACY_POLICY -> "Privacy Policy"
-        AboutModalType.CHECK_UPDATES -> "Software Update"
     }
 
     Dialog(
@@ -527,19 +568,6 @@ private fun AboutDetailDialog(
                             color = palette.secondaryText,
                             fontSize = 13.5.sp,
                             lineHeight = 20.sp
-                        )
-                    }
-                    AboutModalType.CHECK_UPDATES -> {
-                        Text(
-                            text = "You are running Aura Player v2.5.0 release (Media3 1.5.1 + FFmpeg Hardware/Software Decoder).",
-                            color = palette.primaryText,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "Everything is up to date.",
-                            color = palette.secondaryText,
-                            fontSize = 13.sp
                         )
                     }
                 }

@@ -2,8 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Network access for Online Subtitle Search & Download -->
+    <!-- Network access for Online Subtitle Search, Download & In-App Updates -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Tactile feedback on multi-select long press -->
     <uses-permission android:name="android.permission.VIBRATE" />

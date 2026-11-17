@@ -58,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -79,6 +80,7 @@ import com.istiak.auraplayer.ui.components.LocalFrostedBackdropState
 import com.istiak.auraplayer.ui.theme.AuraPlayerTheme
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -109,6 +111,7 @@ enum class FolderPickerMode {
 class MainActivity : FragmentActivity() {
 
     private var shouldEnterPipOnUserLeave: Boolean = false
+    private val showUpdateSheetRequestState = mutableStateOf(false)
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
@@ -122,9 +125,23 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false)) {
+            showUpdateSheetRequestState.value = true
+            intent.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        if (intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false) == true) {
+            showUpdateSheetRequestState.value = true
+            intent?.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
+        }
 
         val externalVideoUri: Uri? = if (intent?.action == Intent.ACTION_VIEW) {
             intent.data
@@ -135,6 +152,7 @@ class MainActivity : FragmentActivity() {
         setContent {
             val settingsStore = remember { SettingsDataStore(applicationContext) }
             val settings by settingsStore.settingsFlow.collectAsState(initial = AppSettingsState())
+            val openUpdateSheetFromNotification by showUpdateSheetRequestState
 
             val useDarkTheme = when (settings.themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -160,6 +178,10 @@ class MainActivity : FragmentActivity() {
                         settings = settings,
                         settingsStore = settingsStore,
                         initialExternalVideoUri = externalVideoUri,
+                        openUpdateSheetFromNotification = openUpdateSheetFromNotification,
+                        onConsumeUpdateSheetNotificationIntent = {
+                            showUpdateSheetRequestState.value = false
+                        },
                         onUpdatePipEligibility = { eligible -> shouldEnterPipOnUserLeave = eligible }
                     )
                 }
@@ -174,6 +196,8 @@ fun AuraPlayerApp(
     settings: AppSettingsState,
     settingsStore: SettingsDataStore,
     initialExternalVideoUri: Uri? = null,
+    openUpdateSheetFromNotification: Boolean = false,
+    onConsumeUpdateSheetNotificationIntent: () -> Unit = {},
     onUpdatePipEligibility: (Boolean) -> Unit = {}
 ) {
     val palette = LocalExtendedPalette.current
@@ -184,7 +208,11 @@ fun AuraPlayerApp(
     val videoRepository = remember(activity) { VideoRepository(activity.applicationContext) }
     val vaultManager = remember(activity) { PrivateVaultManager(activity.applicationContext) }
     val playlistRepository = remember(activity) { PlaylistRepository(activity.applicationContext) }
+    val appUpdateManager = remember(activity) { AppUpdateManager(activity.applicationContext) }
     val playlists by playlistRepository.playlistsFlow.collectAsState(initial = emptyList())
+    var startupUpdateRelease by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
+    var showUpdateBottomSheet by rememberSaveable { mutableStateOf(false) }
+    var hasCompletedStartupUpdateCheck by rememberSaveable { mutableStateOf(false) }
 
     val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_VIDEO
@@ -597,6 +625,24 @@ fun AuraPlayerApp(
         }
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val release = startupUpdateRelease
+            if (release != null) {
+                coroutineScope.launch {
+                    val lastNotified = settings.lastNotifiedUpdateTag
+                    if (!lastNotified.equals(release.tagName, ignoreCase = true)) {
+                        if (appUpdateManager.postSystemUpdateNotification(release)) {
+                            settingsStore.setLastNotifiedUpdateTag(release.tagName)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     LaunchedEffect(showSplash) {
         if (!showSplash) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -614,6 +660,46 @@ fun AuraPlayerApp(
                 if (!hasMediaPermission) {
                     permissionLauncher.launch(requiredPermission)
                 }
+            }
+        }
+    }
+
+    // Automatic startup check on Dispatchers.IO after storage permissions settle
+    LaunchedEffect(Unit) {
+        snapshotFlow { !showSplash && !showAllFilesAccessDialog && hasMediaPermission }
+            .first { it }
+        if (!hasCompletedStartupUpdateCheck) {
+            hasCompletedStartupUpdateCheck = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val notifGranted = ContextCompat.checkSelfPermission(
+                    activity,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!notifGranted) {
+                    runCatching {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
+            val release = appUpdateManager.checkOnStartupAndNotifyIfNeeded(settingsStore)
+            if (release != null) {
+                startupUpdateRelease = release
+                showUpdateBottomSheet = true
+            }
+        }
+    }
+
+    // Handle tapping the system update notification ("show_update_sheet" = true)
+    LaunchedEffect(openUpdateSheetFromNotification) {
+        if (openUpdateSheetFromNotification) {
+            onConsumeUpdateSheetNotificationIntent()
+            val release = startupUpdateRelease ?: when (val res = appUpdateManager.checkForUpdates()) {
+                is UpdateCheckResult.UpdateAvailable -> res.info
+                else -> null
+            }
+            if (release != null) {
+                startupUpdateRelease = release
+                showUpdateBottomSheet = true
             }
         }
     }
@@ -1680,6 +1766,14 @@ fun AuraPlayerApp(
                     }
                 },
                 modifier = Modifier.testTag("all_files_access_dialog")
+            )
+        }
+
+        if (showUpdateBottomSheet && startupUpdateRelease != null) {
+            UpdateBottomSheet(
+                release = startupUpdateRelease!!,
+                updateManager = appUpdateManager,
+                onDismiss = { showUpdateBottomSheet = false }
             )
         }
     }

@@ -193,7 +193,8 @@ data class AppSettingsState(
     val watchedVideoIds: Set<Long> = emptySet(),
     val seenBaselineEpochSec: Long = 0L,
     val playbackPositionsMs: Map<Long, Long> = emptyMap(),
-    val cachedDurationsMs: Map<Long, Long> = emptyMap()
+    val cachedDurationsMs: Map<Long, Long> = emptyMap(),
+    val lastNotifiedUpdateTag: String = ""
 ) {
     val defaultResumePlayback: Boolean
         get() = resumePlaybackMode == ResumePlaybackMode.RESUME
@@ -270,6 +271,7 @@ class SettingsDataStore(private val context: Context) {
         val SEEN_BASELINE_EPOCH_SEC = longPreferencesKey("seen_baseline_epoch_sec")
         val PLAYBACK_POSITIONS = stringSetPreferencesKey("playback_positions")
         val CACHED_DURATIONS = stringSetPreferencesKey("cached_durations")
+        val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.appDataStore.data.map { prefs ->
@@ -375,7 +377,8 @@ class SettingsDataStore(private val context: Context) {
             watchedVideoIds = watchedIds,
             seenBaselineEpochSec = prefs[Keys.SEEN_BASELINE_EPOCH_SEC] ?: 0L,
             playbackPositionsMs = positionsMap,
-            cachedDurationsMs = cachedDurationsMap
+            cachedDurationsMs = cachedDurationsMap,
+            lastNotifiedUpdateTag = prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] ?: ""
         )
     }
 
@@ -697,6 +700,12 @@ class SettingsDataStore(private val context: Context) {
             val watched = prefs[Keys.WATCHED_VIDEO_IDS]?.toMutableSet() ?: mutableSetOf()
             allVideoIds.forEach { watched.add(it.toString()) }
             prefs[Keys.WATCHED_VIDEO_IDS] = watched
+        }
+    }
+
+    suspend fun setLastNotifiedUpdateTag(tagName: String) {
+        context.appDataStore.edit { prefs ->
+            prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] = tagName.trim()
         }
     }
 }
