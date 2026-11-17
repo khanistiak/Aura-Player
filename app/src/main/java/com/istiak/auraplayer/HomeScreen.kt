@@ -159,7 +159,7 @@ fun HomeScreen(
     val fallbackTopContentPadding = statusBarTop + 72.dp +
         (if (isDrilledInTree) 36.dp else 0.dp) +
         (if (showSearchBar) 54.dp else 0.dp)
-    val bottomContentPadding = navBarBottom + 92.dp
+    val bottomContentPadding = navBarBottom + 112.dp
 
     Box(
         modifier = modifier

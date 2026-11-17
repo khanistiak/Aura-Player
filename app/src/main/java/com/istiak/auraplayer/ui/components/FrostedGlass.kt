@@ -196,7 +196,7 @@ fun rememberScrollAwareGlassLayout(
     useGridState: Boolean = false,
     defaultHeaderHeight: Dp = 68.dp,
     extraTopGap: Dp = 4.dp,
-    bottomPadding: Dp = 120.dp,
+    bottomPadding: Dp = 112.dp,
     horizontalPadding: Dp = 0.dp
 ): ScrollAwareGlassLayoutState {
     val density = LocalDensity.current
@@ -290,17 +290,34 @@ fun rememberScrollAwareGlassLayout(
 fun ScrollAwareFixedHeader(
     layoutState: ScrollAwareGlassLayoutState,
     modifier: Modifier = Modifier,
-    blurRadius: Dp = 10.dp,
+    blurRadius: Dp = 12.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val isDark = LocalExtendedPalette.current.isDark
+    val bgColor = MaterialTheme.colorScheme.background
+    val headerScrimBrush = remember(bgColor, isDark) {
+        Brush.verticalGradient(
+            0.0f to bgColor.copy(alpha = 0.96f),
+            0.75f to bgColor.copy(alpha = 0.92f),
+            1.0f to bgColor.copy(alpha = 0.88f)
+        )
+    }
+    val bottomDividerColor = if (isDark) {
+        Color.White.copy(alpha = 0.12f * (0.35f + 0.65f * layoutState.glassProgress))
+    } else {
+        Color(0xFFCBD5E1).copy(alpha = 0.55f * (0.35f + 0.65f * layoutState.glassProgress))
+    }
+
     FrostedGlassSurface(
         backdropState = layoutState.backdropState,
         contentLayerOverride = layoutState.contentGraphicsLayer,
-        glassProgressOverride = layoutState.glassProgress,
+        glassProgressOverride = layoutState.glassProgress.coerceAtLeast(0.85f),
         shape = RectangleShape,
         blurRadius = blurRadius,
         border = null,
-        featherBottomEdge = true,
+        featherBottomEdge = false,
+        baseBackgroundColor = Color.Transparent,
+        specularOverlayBrush = headerScrimBrush,
         modifier = modifier
             .fillMaxWidth()
             .onSizeChanged { size ->
@@ -308,7 +325,18 @@ fun ScrollAwareFixedHeader(
                     layoutState.headerHeightPxState.intValue = size.height
                 }
             },
-        content = content
+        content = {
+            content()
+            Box(
+                modifier = Modifier
+                    .align(androidx.compose.ui.Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .drawBehind {
+                        drawRect(color = bottomDividerColor)
+                    }
+                    .then(Modifier.onSizeChanged { })
+            )
+        }
     )
 }
 

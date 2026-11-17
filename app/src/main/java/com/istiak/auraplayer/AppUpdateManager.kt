@@ -325,7 +325,7 @@ class AppUpdateManager(context: Context) {
         }
 
         /**
-         * Compares two semantic version strings (e.g., `"v2.7.0"` vs `"2.6.1"`).
+         * Compares two semantic version strings (e.g., `"v2.7.0"` vs `"2.6.2"`).
          * Strips `'v'`/`'V'`, whitespace, and pre-release/build suffixes (`-rc1`, `+build`),
          * pads shorter segment lists with `0`, and returns `true` strictly when [remoteTag] > [localVersion].
          */

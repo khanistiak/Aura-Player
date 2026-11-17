@@ -91,18 +91,23 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -192,12 +197,14 @@ fun DirectoryBrowserScreen(
     mountedStorageVolumes: List<StorageVolumeOption> = emptyList(),
     selectedStorageVolumeId: String = PRIMARY_STORAGE_VOLUME_ID,
     onSelectStorageVolume: (String) -> Unit = {},
-    bottomContentPadding: Dp = 120.dp,
+    bottomContentPadding: Dp = 112.dp,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
     val palette = LocalExtendedPalette.current
+    val isDark = palette.isDark
     val isMultiSelectMode = selectedIds.isNotEmpty()
     val isTreeMode = selectedTab == MainNavTab.HOME && settings.viewMode == LibraryViewMode.TREE
     val isFolderMode = selectedTab == MainNavTab.HOME && settings.viewMode == LibraryViewMode.FOLDER
@@ -211,7 +218,7 @@ fun DirectoryBrowserScreen(
         gridState = gridState,
         useGridState = isGridLayout,
         defaultHeaderHeight = 68.dp,
-        extraTopGap = 4.dp,
+        extraTopGap = 6.dp,
         bottomPadding = bottomContentPadding,
         horizontalPadding = if (isGridLayout) 16.dp else 0.dp
     )
@@ -358,6 +365,8 @@ fun DirectoryBrowserScreen(
     val predictiveAlpha = 1f - (0.18f * predictiveBackProgress)
     val predictiveCornerRadius = (24f * predictiveBackProgress).dp
     val headerHeight = scrollLayout.measuredHeaderHeightDp
+    val headerHeightPx = with(density) { headerHeight.toPx() }
+    val fadeFeatherPx = with(density) { 18.dp.toPx() }
 
     Box(modifier = modifier.fillMaxSize()) {
         PullToRefreshBox(
@@ -439,6 +448,25 @@ fun DirectoryBrowserScreen(
                     alpha = predictiveAlpha
                     shape = RoundedCornerShape(predictiveCornerRadius)
                     clip = predictiveBackProgress > 0.01f
+                    compositingStrategy = CompositingStrategy.Offscreen
+                }
+                .drawWithContent {
+                    drawContent()
+                    if (headerHeightPx > 0f && size.height > headerHeightPx + fadeFeatherPx) {
+                        val maskEndY = (headerHeightPx + fadeFeatherPx).coerceAtMost(size.height)
+                        val solidStop = (headerHeightPx / maskEndY).coerceIn(0f, 0.92f)
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0.0f to Color.Transparent,
+                                solidStop to Color.Transparent,
+                                1.0f to Color.Black,
+                                startY = 0f,
+                                endY = maskEndY
+                            ),
+                            size = Size(size.width, maskEndY),
+                            blendMode = BlendMode.DstIn
+                        )
+                    }
                 }
                 .testTag("directory_pull_to_refresh_box")
         ) {
@@ -934,30 +962,57 @@ fun DirectoryBrowserScreen(
                     }
             )
         } else {
+            val headerScrimBgColor = MaterialTheme.colorScheme.background
+            val solidFrostedHeaderScrim = remember(headerScrimBgColor, isDark) {
+                Brush.verticalGradient(
+                    0.0f to headerScrimBgColor.copy(alpha = 0.96f),
+                    0.72f to headerScrimBgColor.copy(alpha = 0.92f),
+                    1.0f to headerScrimBgColor.copy(alpha = 0.88f)
+                )
+            }
+            val hairlineDividerColor = if (isDark) {
+                Color.White.copy(alpha = 0.12f)
+            } else {
+                Color(0xFFCBD5E1).copy(alpha = 0.65f)
+            }
+
             ScrollAwareFixedHeader(
                 layoutState = scrollLayout,
-                modifier = Modifier.align(Alignment.TopCenter)
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .background(solidFrostedHeaderScrim)
+                    .onSizeChanged { size ->
+                        if (size.height > 0 && scrollLayout.headerHeightPxState.intValue != size.height) {
+                            scrollLayout.headerHeightPxState.intValue = size.height
+                        }
+                    }
             ) {
-                LiquidGlassHeaderContent(
-                    title = topTitle,
-                    isDrilledDown = isDrilledDown,
-                    currentPath = if (isTreeMode) currentTreePath else "",
-                    showSearchBar = showSearchBar,
-                    searchQuery = searchQuery,
-                    onNavigateBack = {
-                        if (isTreeMode && currentTreePath.isNotEmpty()) onNavigateUpTree()
-                        else onSelectFlatFolder(null)
-                    },
-                    onNavigateToPath = onNavigateToTreePath,
-                    onOpenVault = onOpenVault,
-                    onToggleSearch = onToggleSearch,
-                    onSearchQueryChange = onSearchQueryChange,
-                    onOpenSortDialog = onOpenSortSheet,
-                    onOpenSettings = onOpenSettings,
-                    onMarkAllAsSeen = onMarkAllAsSeen,
-                    selectedQuickFilter = selectedQuickFilter,
-                    onSelectQuickFilter = onSelectQuickFilter
-                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    LiquidGlassHeaderContent(
+                        title = topTitle,
+                        isDrilledDown = isDrilledDown,
+                        currentPath = if (isTreeMode) currentTreePath else "",
+                        showSearchBar = showSearchBar,
+                        searchQuery = searchQuery,
+                        onNavigateBack = {
+                            if (isTreeMode && currentTreePath.isNotEmpty()) onNavigateUpTree()
+                            else onSelectFlatFolder(null)
+                        },
+                        onNavigateToPath = onNavigateToTreePath,
+                        onOpenVault = onOpenVault,
+                        onToggleSearch = onToggleSearch,
+                        onSearchQueryChange = onSearchQueryChange,
+                        onOpenSortDialog = onOpenSortSheet,
+                        onOpenSettings = onOpenSettings,
+                        onMarkAllAsSeen = onMarkAllAsSeen,
+                        selectedQuickFilter = selectedQuickFilter,
+                        onSelectQuickFilter = onSelectQuickFilter
+                    )
+                    HorizontalDivider(
+                        thickness = 0.8.dp,
+                        color = hairlineDividerColor
+                    )
+                }
             }
         }
     }
@@ -1951,8 +2006,8 @@ fun DirectoryVideoRow(
         if (DisplayField.THUMBNAILS in settings.enabledFields) {
             Box(
                 modifier = Modifier
-                    .width(124.dp)
-                    .height(70.dp)
+                    .width(128.dp)
+                    .height(76.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(palette.neutralChipBg)
             ) {
@@ -1963,14 +2018,20 @@ fun DirectoryVideoRow(
                     video.vaultFilePath,
                     video.durationMs,
                     video.dateModifiedSec,
-                    video.isVaultItem
+                    video.isVaultItem,
+                    video.width,
+                    video.height,
+                    video.rotationDegrees
                 ) {
                     VideoThumbnailKey(
                         uri = video.uri,
                         filePath = video.filePath ?: video.vaultFilePath,
                         durationMs = video.durationMs,
                         dateModifiedSec = video.dateModifiedSec,
-                        isVaultItem = video.isVaultItem
+                        isVaultItem = video.isVaultItem,
+                        width = video.width,
+                        height = video.height,
+                        orientationDegrees = video.rotationDegrees
                     )
                 }
                 AsyncImage(
@@ -1980,6 +2041,7 @@ fun DirectoryVideoRow(
                     imageLoader = imageLoader,
                     contentDescription = video.displayName,
                     contentScale = ContentScale.Crop,
+                    filterQuality = FilterQuality.High,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -2144,14 +2206,20 @@ fun DirectoryVideoGridCard(
                 video.vaultFilePath,
                 video.durationMs,
                 video.dateModifiedSec,
-                video.isVaultItem
+                video.isVaultItem,
+                video.width,
+                video.height,
+                video.rotationDegrees
             ) {
                 VideoThumbnailKey(
                     uri = video.uri,
                     filePath = video.filePath ?: video.vaultFilePath,
                     durationMs = video.durationMs,
                     dateModifiedSec = video.dateModifiedSec,
-                    isVaultItem = video.isVaultItem
+                    isVaultItem = video.isVaultItem,
+                    width = video.width,
+                    height = video.height,
+                    orientationDegrees = video.rotationDegrees
                 )
             }
             AsyncImage(
@@ -2161,6 +2229,7 @@ fun DirectoryVideoGridCard(
                 imageLoader = imageLoader,
                 contentDescription = video.title,
                 contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
                 modifier = Modifier.fillMaxSize()
             )
             if (isUnwatched) {

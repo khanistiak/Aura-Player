@@ -1,8 +1,16 @@
 package com.istiak.auraplayer
 
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -36,7 +45,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
@@ -44,13 +52,9 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -58,16 +62,25 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,11 +88,13 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import com.istiak.auraplayer.ui.theme.DangerRed
-import com.istiak.auraplayer.ui.theme.PlayerDrawerBg
-import com.istiak.auraplayer.ui.theme.PlayerHudGlassBg
 import com.istiak.auraplayer.ui.theme.PlayerHudGlassBorder
 import com.istiak.auraplayer.ui.theme.PlayerSeekPeriwinkle
+import java.util.Locale
+import kotlin.math.roundToInt
 
 sealed class SleepTimerSelection {
     data object Off : SleepTimerSelection()
@@ -93,6 +108,17 @@ enum class PlayerDrawerType {
     SUBTITLE,
     EQUALIZER,
     MORE_OPTIONS
+}
+
+enum class StereoMode(val label: String) {
+    STEREO("Stereo"),
+    MONO("Mono"),
+    REVERSE_STEREO("Reverse Stereo");
+
+    fun next(): StereoMode {
+        val all = entries
+        return all[(ordinal + 1) % all.size]
+    }
 }
 
 data class AudioTrackUiModel(
@@ -128,228 +154,461 @@ enum class EqPreset(val label: String, val bandsDb: List<Float>) {
     DANCE("Dance", listOf(5f, 2f, 0f, 3f, 5f))
 }
 
+private val MxSkyBlueActive = Color(0xFF38BDF8)
+private val MxSoftBlueAccent = Color(0xFF60A5FA)
+private val MxDrawerDividerColor = Color.White.copy(alpha = 0.16f)
+private val MxTextDropShadow = Shadow(
+    color = Color.Black.copy(alpha = 0.75f),
+    offset = Offset(0f, 1.5f),
+    blurRadius = 3.5f
+)
+
+/**
+ * MX Player-Style Translucent Right-Side Overlay Drawer Host:
+ * - Full-height right-aligned drawer (`340.dp` in landscape / `290.dp` in portrait)
+ * - Smooth horizontal gradient backdrop (`Color.Black.copy(alpha = 0.0f)` -> `0.62f` -> `Color(0xFF0B0F19).copy(alpha = 0.86f)`)
+ *   so the playing video remains softly visible beneath crisp white text.
+ * - Slide-in (`240ms FastOutSlowInEasing`) & slide-out (`210ms FastOutSlowInEasing`) + fade animations.
+ * - Tapping anywhere on the left video area outside the drawer smoothly slides the drawer out to the right.
+ */
 @Composable
 fun RightSidePlayerDrawer(
     visible: Boolean,
+    isLandscape: Boolean = true,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    if (visible) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                )
+    val drawerWidth = if (isLandscape) 340.dp else 290.dp
+    val drawerGradient = remember {
+        Brush.horizontalGradient(
+            0.00f to Color.Black.copy(alpha = 0.0f),
+            0.14f to Color.Black.copy(alpha = 0.42f),
+            0.38f to Color.Black.copy(alpha = 0.62f),
+            1.00f to Color(0xFF0B0F19).copy(alpha = 0.86f)
+        )
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .zIndex(12f)
+    ) {
+        // Transparent tap-outside catcher over the unobstructed video area
+        if (visible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss
+                    )
+                    .testTag("drawer_outside_scrim")
+            )
+        }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInHorizontally(
+                initialOffsetX = { fullWidth -> fullWidth },
+                animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing)
+            ) + fadeIn(animationSpec = tween(durationMillis = 180)),
+            exit = slideOutHorizontally(
+                targetOffsetX = { fullWidth -> fullWidth },
+                animationSpec = tween(durationMillis = 210, easing = FastOutSlowInEasing)
+            ) + fadeOut(animationSpec = tween(durationMillis = 160)),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
         ) {
-            AnimatedVisibility(
-                visible = visible,
-                enter = slideInHorizontally(initialOffsetX = { it }),
-                exit = slideOutHorizontally(targetOffsetX = { it }),
-                modifier = Modifier.align(Alignment.CenterEnd)
+            Box(
+                modifier = Modifier
+                    .width(drawerWidth)
+                    .fillMaxHeight()
+                    .background(drawerGradient)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(start = 26.dp, end = 18.dp, top = 16.dp, bottom = 14.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .width(304.dp)
-                        .fillMaxHeight()
-                        .background(PlayerDrawerBg)
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {}
-                        )
-                        .padding(16.dp)
-                ) {
-                    content()
-                }
+                content()
             }
         }
     }
 }
 
+@Composable
+private fun MxCustomRadioIndicator(
+    selected: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier.size(20.dp)) {
+        val strokeWidthPx = 1.8.dp.toPx()
+        val outerRadius = (size.minDimension - strokeWidthPx) / 2f
+        drawCircle(
+            color = if (selected) MxSkyBlueActive else Color.White.copy(alpha = 0.65f),
+            radius = outerRadius,
+            style = Stroke(width = strokeWidthPx)
+        )
+        if (selected) {
+            drawCircle(
+                color = MxSkyBlueActive,
+                radius = outerRadius * 0.52f
+            )
+        }
+    }
+}
+
+@Composable
+private fun MxRoundedSquareCheckbox(
+    checked: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(19.dp)
+            .clip(shape)
+            .background(if (checked) MxSkyBlueActive else Color.Transparent)
+            .border(
+                width = 1.6.dp,
+                color = if (checked) MxSkyBlueActive else Color.White.copy(alpha = 0.65f),
+                shape = shape
+            )
+    ) {
+        if (checked) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = null,
+                tint = Color(0xFF06101E),
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MxInlineStepperRow(
+    label: String,
+    valueText: String,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier,
+    decrementTag: String = "",
+    incrementTag: String = "",
+    badgeTag: String = ""
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Normal,
+            style = TextStyle(shadow = MxTextDropShadow),
+            modifier = Modifier.weight(1f)
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.12f))
+                    .border(0.7.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(8.dp))
+                    .clickable(onClick = onDecrement)
+                    .then(if (decrementTag.isNotEmpty()) Modifier.testTag(decrementTag) else Modifier)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Remove,
+                    contentDescription = "Decrease $label",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .widthIn(min = 68.dp)
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.White.copy(alpha = 0.14f))
+                    .border(0.7.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(6.dp))
+                    .clickable(onClick = onReset)
+                    .padding(horizontal = 8.dp)
+                    .then(if (badgeTag.isNotEmpty()) Modifier.testTag(badgeTag) else Modifier)
+            ) {
+                Text(
+                    text = valueText,
+                    color = Color.White,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.White.copy(alpha = 0.12f))
+                    .border(0.7.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(8.dp))
+                    .clickable(onClick = onIncrement)
+                    .then(if (incrementTag.isNotEmpty()) Modifier.testTag(incrementTag) else Modifier)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = "Increase $label",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * MX Player-Style Audio Track Side Panel (`PlayerDrawerType.AUDIO`):
+ * - Bold `Audio Track` header (`18.sp`, `FontWeight.SemiBold`, `Color.White`)
+ * - Scrollable track list with circular `#38BDF8` radio buttons + 2-line track metadata,
+ *   `Disable` radio option right below tracks, and `Use SW audio decoder` square checkbox below a thin divider.
+ * - Bottom action & stepper rows separated by a thin `0.6.dp` divider:
+ *   `Open`, `Stereo mode`, and `Synchronization` (`-` `[ 0.00s ]` `+` stepping by `±0.10s`).
+ */
 @Composable
 fun AudioTrackDrawerContent(
     tracks: List<AudioTrackUiModel>,
     isAudioDisabled: Boolean,
     useSwAudioDecoder: Boolean,
     audioSyncOffsetMs: Int,
+    stereoMode: StereoMode = StereoMode.STEREO,
     onSelectTrack: (AudioTrackUiModel) -> Unit,
     onSelectDefaultAudio: () -> Unit = {},
     onDisableAudio: () -> Unit,
     onToggleSwAudioDecoder: (Boolean) -> Unit,
+    onOpenExternalAudio: () -> Unit = {},
+    onCycleStereoMode: () -> Unit = {},
     onAdjustAudioSyncMs: (Int) -> Unit,
     onClose: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .testTag("audio_track_drawer")
     ) {
-        DrawerHeader(title = "Audio Track", onClose = onClose)
-        Spacer(modifier = Modifier.height(10.dp))
+        Text(
+            text = "Audio Track",
+            color = Color.White,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = TextStyle(shadow = MxTextDropShadow),
+            modifier = Modifier.padding(bottom = 10.dp)
+        )
 
-        if (tracks.isEmpty()) {
-            val defaultSelected = !isAudioDisabled
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (defaultSelected) PlayerSeekPeriwinkle.copy(alpha = 0.2f) else Color.Transparent)
-                    .clickable { onSelectDefaultAudio() }
-                    .padding(vertical = 10.dp, horizontal = 8.dp)
-                    .testTag("drawer_audio_default")
-            ) {
-                RadioButton(
-                    selected = defaultSelected,
-                    onClick = onSelectDefaultAudio,
-                    colors = RadioButtonDefaults.colors(
-                        selectedColor = PlayerSeekPeriwinkle,
-                        unselectedColor = Color.White.copy(alpha = 0.6f)
-                    )
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Default Stream Audio",
-                        color = if (defaultSelected) PlayerSeekPeriwinkle else Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = if (defaultSelected) FontWeight.SemiBold else FontWeight.Normal
-                    )
-                    Text(
-                        text = "Primary container audio track",
-                        color = Color.White.copy(alpha = 0.65f),
-                        fontSize = 11.sp
-                    )
-                }
-            }
-        } else {
-            tracks.forEach { track ->
-                val selected = !isAudioDisabled && track.isSelected
+        // Scrollable Track List + Disable + Use SW audio decoder
+        Column(
+            modifier = Modifier
+                .weight(1f, fill = true)
+                .verticalScroll(rememberScrollState())
+        ) {
+            if (tracks.isEmpty()) {
+                val defaultSelected = !isAudioDisabled
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (selected) PlayerSeekPeriwinkle.copy(alpha = 0.2f) else Color.Transparent)
-                        .clickable { onSelectTrack(track) }
-                        .padding(vertical = 10.dp, horizontal = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onSelectDefaultAudio)
+                        .padding(vertical = 9.dp, horizontal = 4.dp)
+                        .testTag("drawer_audio_default")
                 ) {
-                    RadioButton(
-                        selected = selected,
-                        onClick = { onSelectTrack(track) },
-                        colors = RadioButtonDefaults.colors(
-                            selectedColor = PlayerSeekPeriwinkle,
-                            unselectedColor = Color.White.copy(alpha = 0.6f)
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    MxCustomRadioIndicator(selected = defaultSelected)
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = track.label,
-                            color = if (selected) PlayerSeekPeriwinkle else Color.White,
+                            text = "Track 1 - Primary Audio",
+                            color = Color.White,
                             fontSize = 14.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            fontWeight = if (defaultSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            style = TextStyle(shadow = MxTextDropShadow)
                         )
-                        if (track.detail.isNotEmpty()) {
+                        Text(
+                            text = "AAC / Stereo / 48 kHz",
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            } else {
+                tracks.forEach { track ->
+                    val selected = !isAudioDisabled && track.isSelected
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onSelectTrack(track) }
+                            .padding(vertical = 9.dp, horizontal = 4.dp)
+                    ) {
+                        MxCustomRadioIndicator(selected = selected)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = track.detail,
-                                color = Color.White.copy(alpha = 0.65f),
-                                fontSize = 11.sp
+                                text = track.label,
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                style = TextStyle(shadow = MxTextDropShadow),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            if (track.detail.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(1.dp))
+                                Text(
+                                    text = track.detail,
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(if (isAudioDisabled) PlayerSeekPeriwinkle.copy(alpha = 0.2f) else Color.Transparent)
-                .clickable { onDisableAudio() }
-                .padding(vertical = 8.dp, horizontal = 8.dp)
-                .testTag("drawer_audio_disable")
-        ) {
-            RadioButton(
-                selected = isAudioDisabled,
-                onClick = onDisableAudio,
-                colors = RadioButtonDefaults.colors(
-                    selectedColor = PlayerSeekPeriwinkle,
-                    unselectedColor = Color.White.copy(alpha = 0.6f)
+            // Disable radio option right below tracks
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onDisableAudio)
+                    .padding(vertical = 9.dp, horizontal = 4.dp)
+                    .testTag("drawer_audio_disable")
+            ) {
+                MxCustomRadioIndicator(selected = isAudioDisabled)
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Disable",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = if (isAudioDisabled) FontWeight.SemiBold else FontWeight.Normal,
+                    style = TextStyle(shadow = MxTextDropShadow)
                 )
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "Disable",
-                color = if (isAudioDisabled) PlayerSeekPeriwinkle else Color.White,
-                fontSize = 14.sp
-            )
-        }
+            }
 
-        Spacer(modifier = Modifier.height(10.dp))
-        HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
-        Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(thickness = 0.6.dp, color = MxDrawerDividerColor)
+            Spacer(modifier = Modifier.height(8.dp))
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onToggleSwAudioDecoder(!useSwAudioDecoder) }
-                .padding(vertical = 4.dp)
-                .testTag("drawer_sw_audio_checkbox")
-        ) {
-            Checkbox(
-                checked = useSwAudioDecoder,
-                onCheckedChange = onToggleSwAudioDecoder,
-                colors = CheckboxDefaults.colors(
-                    checkedColor = PlayerSeekPeriwinkle,
-                    uncheckedColor = Color.White.copy(alpha = 0.7f),
-                    checkmarkColor = Color.Black
-                )
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Column {
+            // Square checkbox option: Use SW audio decoder
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onToggleSwAudioDecoder(!useSwAudioDecoder) }
+                    .padding(vertical = 9.dp, horizontal = 4.dp)
+                    .testTag("drawer_sw_audio_checkbox")
+            ) {
+                MxRoundedSquareCheckbox(checked = useSwAudioDecoder)
+                Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = "Use SW audio decoder",
                     color = Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "FFmpeg software decoder for EAC3 / AC3 / DTS / TrueHD",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 11.sp
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Normal,
+                    style = TextStyle(shadow = MxTextDropShadow)
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "Audio Synchronization",
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        SyncStepControlRow(
-            valueText = "${if (audioSyncOffsetMs > 0) "+" else ""}$audioSyncOffsetMs ms",
-            onDecrement = { onAdjustAudioSyncMs(audioSyncOffsetMs - 50) },
-            onIncrement = { onAdjustAudioSyncMs(audioSyncOffsetMs + 50) },
-            onReset = { onAdjustAudioSyncMs(0) }
+        Spacer(modifier = Modifier.height(6.dp))
+        HorizontalDivider(thickness = 0.6.dp, color = MxDrawerDividerColor)
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Bottom Action & Stepper Rows: Open, Stereo mode, Synchronization
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onOpenExternalAudio)
+                .padding(vertical = 10.dp, horizontal = 4.dp)
+                .testTag("drawer_open_audio_file")
+        ) {
+            Text(
+                text = "Open",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
+            )
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onCycleStereoMode)
+                .padding(vertical = 10.dp, horizontal = 4.dp)
+                .testTag("drawer_stereo_mode_row")
+        ) {
+            Text(
+                text = "Stereo mode",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
+            )
+            Text(
+                text = stereoMode.label,
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 13.sp
+            )
+        }
+
+        val audioSyncSeconds = audioSyncOffsetMs / 1000.0
+        val formattedAudioSync = String.format(Locale.US, "%.2fs", audioSyncSeconds)
+        MxInlineStepperRow(
+            label = "Synchronization",
+            valueText = formattedAudioSync,
+            onDecrement = { onAdjustAudioSyncMs(audioSyncOffsetMs - 100) },
+            onIncrement = { onAdjustAudioSyncMs(audioSyncOffsetMs + 100) },
+            onReset = { onAdjustAudioSyncMs(0) },
+            decrementTag = "audio_sync_minus",
+            incrementTag = "audio_sync_plus",
+            badgeTag = "audio_sync_value"
         )
     }
 }
 
+/**
+ * MX Player-Style Subtitle Side Panel (`PlayerDrawerType.SUBTITLE`):
+ * - Bold `Subtitle` header (`18.sp`, `FontWeight.SemiBold`, `Color.White`)
+ * - Scrollable track list with Rounded Square Checkboxes (`RoundedCornerShape(4.dp)`, `#38BDF8` fill when checked)
+ * - Bottom Action & Stepper Rows separated by thin `0.6.dp` divider:
+ *   `Open`, `Online subtitles`, `Subtitle Style / Appearance`, `Synchronization` (`±0.1s`), and `Speed` (`±0.5%`).
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SubtitleDrawerContent(
@@ -367,236 +626,279 @@ fun SubtitleDrawerContent(
     onUpdateStyleConfig: (SubtitleStyleConfig) -> Unit,
     onClose: () -> Unit
 ) {
+    var showStyleSection by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .testTag("subtitle_drawer")
     ) {
-        DrawerHeader(title = "Subtitle", onClose = onClose)
-        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Subtitle",
+            color = Color.White,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = TextStyle(shadow = MxTextDropShadow),
+            modifier = Modifier.padding(bottom = 10.dp)
+        )
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        // Scrollable Subtitle Track List
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(PlayerSeekPeriwinkle.copy(alpha = 0.18f))
-                .clickable(onClick = onOpenExternalSubtitle)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
-                .testTag("drawer_open_subtitle_file")
+                .weight(1f, fill = true)
+                .verticalScroll(rememberScrollState())
         ) {
-            Icon(
-                imageVector = Icons.Filled.FolderOpen,
-                contentDescription = null,
-                tint = PlayerSeekPeriwinkle,
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text = "Open External (.srt / .ass / .vtt)",
-                color = PlayerSeekPeriwinkle,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
+            tracks.forEach { track ->
+                val checked = areSubtitlesEnabled && track.isSelected
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            if (checked) {
+                                onDisableSubtitles()
+                            } else {
+                                onSelectTrack(track)
+                            }
+                        }
+                        .padding(vertical = 9.dp, horizontal = 4.dp)
+                ) {
+                    MxRoundedSquareCheckbox(checked = checked)
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = if (track.isExternal) "${track.label} [External]" else track.label,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal,
+                        style = TextStyle(shadow = MxTextDropShadow),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF2563EB).copy(alpha = 0.24f))
-                .border(1.dp, PlayerSeekPeriwinkle.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-                .clickable(onClick = onSearchOnlineSubtitles)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
-                .testTag("drawer_search_online_subtitle")
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Refresh,
-                contentDescription = null,
-                tint = PlayerSeekPeriwinkle,
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text = "Search Online (.srt)",
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        tracks.forEach { track ->
-            val selected = areSubtitlesEnabled && track.isSelected
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (selected) PlayerSeekPeriwinkle.copy(alpha = 0.2f) else Color.Transparent)
-                    .clickable { onSelectTrack(track) }
-                    .padding(vertical = 8.dp, horizontal = 6.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onDisableSubtitles)
+                    .padding(vertical = 9.dp, horizontal = 4.dp)
+                    .testTag("drawer_subtitle_disable")
             ) {
-                RadioButton(
-                    selected = selected,
-                    onClick = { onSelectTrack(track) },
-                    colors = RadioButtonDefaults.colors(
-                        selectedColor = PlayerSeekPeriwinkle,
-                        unselectedColor = Color.White.copy(alpha = 0.6f)
-                    )
-                )
+                MxRoundedSquareCheckbox(checked = !areSubtitlesEnabled)
+                Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = if (track.isExternal) "${track.label} [External]" else track.label,
-                    color = if (selected) PlayerSeekPeriwinkle else Color.White,
-                    fontSize = 13.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    text = "Disable",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = if (!areSubtitlesEnabled) FontWeight.SemiBold else FontWeight.Normal,
+                    style = TextStyle(shadow = MxTextDropShadow)
                 )
+            }
+
+            // Expandable inline Subtitle Style / Appearance customization controls
+            AnimatedVisibility(
+                visible = showStyleSection,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .border(0.6.dp, MxDrawerDividerColor, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "Font Size (${styleConfig.fontSizeSp.toInt()}sp)",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 12.sp
+                    )
+                    Slider(
+                        value = styleConfig.fontSizeSp,
+                        onValueChange = { onUpdateStyleConfig(styleConfig.copy(fontSizeSp = it)) },
+                        valueRange = 12f..32f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MxSkyBlueActive,
+                            activeTrackColor = MxSkyBlueActive,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.22f)
+                        )
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Bold Text", color = Color.White.copy(alpha = 0.88f), fontSize = 12.5.sp)
+                        Switch(
+                            checked = styleConfig.isBold,
+                            onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(isBold = it)) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = MxSkyBlueActive
+                            )
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Shadow Background", color = Color.White.copy(alpha = 0.88f), fontSize = 12.5.sp)
+                        Switch(
+                            checked = styleConfig.hasBackground,
+                            onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(hasBackground = it)) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = MxSkyBlueActive
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Text Color", color = Color.White.copy(alpha = 0.82f), fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        listOf(
+                            android.graphics.Color.WHITE,
+                            android.graphics.Color.YELLOW,
+                            android.graphics.Color.CYAN,
+                            android.graphics.Color.GREEN
+                        ).forEach { colorArgb ->
+                            val isSelected = styleConfig.textColorArgb == colorArgb
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(colorArgb))
+                                    .border(
+                                        width = if (isSelected) 2.5.dp else 1.dp,
+                                        color = if (isSelected) MxSkyBlueActive else Color.White.copy(alpha = 0.4f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable { onUpdateStyleConfig(styleConfig.copy(textColorArgb = colorArgb)) }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Bottom Margin (${(styleConfig.bottomMarginFraction * 100).toInt()}%)",
+                        color = Color.White.copy(alpha = 0.82f),
+                        fontSize = 12.sp
+                    )
+                    Slider(
+                        value = styleConfig.bottomMarginFraction,
+                        onValueChange = { onUpdateStyleConfig(styleConfig.copy(bottomMarginFraction = it)) },
+                        valueRange = 0.02f..0.28f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MxSkyBlueActive,
+                            activeTrackColor = MxSkyBlueActive,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.22f)
+                        )
+                    )
+                }
             }
         }
 
+        Spacer(modifier = Modifier.height(6.dp))
+        HorizontalDivider(thickness = 0.6.dp, color = MxDrawerDividerColor)
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Bottom Action & Stepper Rows: Open, Online subtitles, Subtitle Style, Synchronization, Speed
         Row(
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(if (!areSubtitlesEnabled) PlayerSeekPeriwinkle.copy(alpha = 0.2f) else Color.Transparent)
-                .clickable(onClick = onDisableSubtitles)
-                .padding(vertical = 6.dp, horizontal = 6.dp)
-                .testTag("drawer_subtitle_disable")
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onOpenExternalSubtitle)
+                .padding(vertical = 9.dp, horizontal = 4.dp)
+                .testTag("drawer_open_subtitle_file")
         ) {
-            RadioButton(
-                selected = !areSubtitlesEnabled,
-                onClick = onDisableSubtitles,
-                colors = RadioButtonDefaults.colors(
-                    selectedColor = PlayerSeekPeriwinkle,
-                    unselectedColor = Color.White.copy(alpha = 0.6f)
-                )
+            Text(
+                text = "Open",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
+            )
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onSearchOnlineSubtitles)
+                .padding(vertical = 9.dp, horizontal = 4.dp)
+                .testTag("drawer_search_online_subtitle")
+        ) {
+            Text(
+                text = "Online subtitles",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
+            )
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { showStyleSection = !showStyleSection }
+                .padding(vertical = 9.dp, horizontal = 4.dp)
+                .testTag("drawer_subtitle_style_row")
+        ) {
+            Text(
+                text = "Subtitle Style / Appearance",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
             )
             Text(
-                text = "Disable Subtitles",
-                color = if (!areSubtitlesEnabled) PlayerSeekPeriwinkle else Color.White,
-                fontSize = 13.sp
+                text = "${styleConfig.fontSizeSp.toInt()}sp",
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 12.5.sp
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-        HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Text("Synchronization", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(modifier = Modifier.height(6.dp))
-        val secVal = subtitleSyncOffsetMs / 1000.0
-        SyncStepControlRow(
-            valueText = String.format(java.util.Locale.US, "%+.1fs", secVal),
-            onDecrement = { onAdjustSubtitleSyncMs(subtitleSyncOffsetMs - 500L) },
-            onIncrement = { onAdjustSubtitleSyncMs(subtitleSyncOffsetMs + 500L) },
-            onReset = { onAdjustSubtitleSyncMs(0L) }
+        val subSyncSec = subtitleSyncOffsetMs / 1000.0
+        MxInlineStepperRow(
+            label = "Synchronization",
+            valueText = String.format(Locale.US, "%.1fs", subSyncSec),
+            onDecrement = { onAdjustSubtitleSyncMs(subtitleSyncOffsetMs - 100L) },
+            onIncrement = { onAdjustSubtitleSyncMs(subtitleSyncOffsetMs + 100L) },
+            onReset = { onAdjustSubtitleSyncMs(0L) },
+            decrementTag = "subtitle_sync_minus",
+            incrementTag = "subtitle_sync_plus",
+            badgeTag = "subtitle_sync_value"
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-        Text("Subtitle Speed", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(modifier = Modifier.height(6.dp))
-        SyncStepControlRow(
-            valueText = String.format(java.util.Locale.US, "%.2fx", subtitleSpeed),
-            onDecrement = { onAdjustSubtitleSpeed((subtitleSpeed - 0.05f).coerceAtLeast(0.5f)) },
-            onIncrement = { onAdjustSubtitleSpeed((subtitleSpeed + 0.05f).coerceAtMost(2.0f)) },
-            onReset = { onAdjustSubtitleSpeed(1.0f) }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-        HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Text("Customization", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "Font Size (${styleConfig.fontSizeSp.toInt()}sp)",
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 12.sp
-        )
-        Slider(
-            value = styleConfig.fontSizeSp,
-            onValueChange = { onUpdateStyleConfig(styleConfig.copy(fontSizeSp = it)) },
-            valueRange = 12f..32f,
-            colors = SliderDefaults.colors(
-                thumbColor = PlayerSeekPeriwinkle,
-                activeTrackColor = PlayerSeekPeriwinkle
-            )
-        )
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Bold Text", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
-            Switch(
-                checked = styleConfig.isBold,
-                onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(isBold = it)) },
-                colors = SwitchDefaults.colors(checkedThumbColor = PlayerSeekPeriwinkle)
-            )
-        }
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Shadow Background", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
-            Switch(
-                checked = styleConfig.hasBackground,
-                onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(hasBackground = it)) },
-                colors = SwitchDefaults.colors(checkedThumbColor = PlayerSeekPeriwinkle)
-            )
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-        Text("Text Color", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
-        Spacer(modifier = Modifier.height(6.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(
-                android.graphics.Color.WHITE,
-                android.graphics.Color.YELLOW,
-                android.graphics.Color.CYAN,
-                android.graphics.Color.GREEN
-            ).forEach { colorArgb ->
-                val isSelected = styleConfig.textColorArgb == colorArgb
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .background(Color(colorArgb))
-                        .border(
-                            width = if (isSelected) 2.5.dp else 1.dp,
-                            color = if (isSelected) PlayerSeekPeriwinkle else Color.White.copy(alpha = 0.4f),
-                            shape = CircleShape
-                        )
-                        .clickable { onUpdateStyleConfig(styleConfig.copy(textColorArgb = colorArgb)) }
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(
-            text = "Bottom Margin (${(styleConfig.bottomMarginFraction * 100).toInt()}%)",
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 12.sp
-        )
-        Slider(
-            value = styleConfig.bottomMarginFraction,
-            onValueChange = { onUpdateStyleConfig(styleConfig.copy(bottomMarginFraction = it)) },
-            valueRange = 0.02f..0.28f,
-            colors = SliderDefaults.colors(
-                thumbColor = PlayerSeekPeriwinkle,
-                activeTrackColor = PlayerSeekPeriwinkle
-            )
+        val subSpeedPercent = subtitleSpeed * 100f
+        MxInlineStepperRow(
+            label = "Speed",
+            valueText = String.format(Locale.US, "%.1f%%", subSpeedPercent),
+            onDecrement = {
+                val next = ((subtitleSpeed - 0.005f) * 200f).roundToInt() / 200f
+                onAdjustSubtitleSpeed(next.coerceIn(0.5f, 2.0f))
+            },
+            onIncrement = {
+                val next = ((subtitleSpeed + 0.005f) * 200f).roundToInt() / 200f
+                onAdjustSubtitleSpeed(next.coerceIn(0.5f, 2.0f))
+            },
+            onReset = { onAdjustSubtitleSpeed(1.0f) },
+            decrementTag = "subtitle_speed_minus",
+            incrementTag = "subtitle_speed_plus",
+            badgeTag = "subtitle_speed_value"
         )
     }
 }
@@ -890,8 +1192,9 @@ private fun DrawerHeader(
         Text(
             text = title,
             color = Color.White,
-            fontSize = 17.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = TextStyle(shadow = MxTextDropShadow)
         )
         IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
             Icon(
@@ -904,47 +1207,11 @@ private fun DrawerHeader(
     }
 }
 
-@Composable
-private fun SyncStepControlRow(
-    valueText: String,
-    onDecrement: () -> Unit,
-    onIncrement: () -> Unit,
-    onReset: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.White.copy(alpha = 0.08f))
-            .padding(horizontal = 6.dp, vertical = 4.dp)
-    ) {
-        IconButton(onClick = onDecrement, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Filled.Remove, contentDescription = "Decrease", tint = Color.White)
-        }
-        Text(
-            text = valueText,
-            color = PlayerSeekPeriwinkle,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onIncrement, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Filled.Add, contentDescription = "Increase", tint = Color.White)
-            }
-            IconButton(onClick = onReset, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    Icons.Filled.Refresh,
-                    contentDescription = "Reset",
-                    tint = Color.White.copy(alpha = 0.75f),
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-    }
-}
-
+/**
+ * Responsive Floating Playback Speed Control Bar (`0.25x` to `4.00x` in `0.05x` steps):
+ * - Elevated with `zIndex(20f)` and an explicit click consumer so touches on the slider,
+ *   `-`, `+`, `↻` (reset `1.0x`), or `✕` (close) never leak through to the video surface.
+ */
 @Composable
 fun FloatingPlaybackSpeedBar(
     speed: Float,
@@ -952,136 +1219,268 @@ fun FloatingPlaybackSpeedBar(
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    fun snapSpeed(raw: Float): Float {
+        return (((raw * 20f).roundToInt()) / 20f).coerceIn(0.25f, 4.0f)
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = modifier
+            .zIndex(20f)
+            .widthIn(max = 460.dp)
             .fillMaxWidth()
-            .padding(horizontal = 24.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(PlayerDrawerBg)
-            .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(18.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 20.dp)
+            .shadow(elevation = 16.dp, shape = RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF0F172A).copy(alpha = 0.90f))
+            .border(1.dp, PlayerHudGlassBorder, RoundedCornerShape(20.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp)
             .testTag("floating_speed_bar")
     ) {
         IconButton(
-            onClick = { onSpeedChange((speed - 0.1f).coerceAtLeast(0.25f)) },
-            modifier = Modifier.size(36.dp)
+            onClick = { onSpeedChange(snapSpeed(speed - 0.05f)) },
+            modifier = Modifier
+                .size(40.dp)
+                .testTag("speed_bar_minus")
         ) {
             Icon(Icons.Filled.Remove, contentDescription = "Slower", tint = Color.White)
         }
 
         Text(
-            text = String.format(java.util.Locale.US, "%.2fx", speed),
-            color = PlayerSeekPeriwinkle,
+            text = String.format(Locale.US, "%.2fx", speed),
+            color = MxSoftBlueAccent,
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.width(48.dp),
+            modifier = Modifier
+                .width(52.dp)
+                .testTag("speed_bar_value_text"),
             textAlign = TextAlign.Center
         )
 
         Slider(
-            value = speed,
-            onValueChange = {
-                val rounded = (it * 20).toInt() / 20f
-                onSpeedChange(rounded.coerceIn(0.25f, 4.0f))
+            value = speed.coerceIn(0.25f, 4.0f),
+            onValueChange = { newVal ->
+                onSpeedChange(snapSpeed(newVal))
             },
             valueRange = 0.25f..4.0f,
             colors = SliderDefaults.colors(
-                thumbColor = PlayerSeekPeriwinkle,
-                activeTrackColor = PlayerSeekPeriwinkle,
-                inactiveTrackColor = Color.White.copy(alpha = 0.25f)
+                thumbColor = MxSoftBlueAccent,
+                activeTrackColor = MxSoftBlueAccent,
+                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
             ),
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .testTag("speed_bar_slider")
         )
 
         IconButton(
-            onClick = { onSpeedChange((speed + 0.1f).coerceAtMost(4.0f)) },
-            modifier = Modifier.size(36.dp)
+            onClick = { onSpeedChange(snapSpeed(speed + 0.05f)) },
+            modifier = Modifier
+                .size(40.dp)
+                .testTag("speed_bar_plus")
         ) {
             Icon(Icons.Filled.Add, contentDescription = "Faster", tint = Color.White)
         }
 
         IconButton(
             onClick = { onSpeedChange(1.0f) },
-            modifier = Modifier.size(36.dp)
+            modifier = Modifier
+                .size(40.dp)
+                .testTag("speed_bar_reset")
         ) {
-            Icon(Icons.Filled.Refresh, contentDescription = "Reset 1.0x", tint = Color.White.copy(alpha = 0.85f))
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = "Reset 1.0x",
+                tint = Color.White.copy(alpha = 0.88f)
+            )
         }
 
         IconButton(
             onClick = onClose,
-            modifier = Modifier.size(36.dp)
+            modifier = Modifier
+                .size(40.dp)
+                .testTag("speed_bar_close")
         ) {
-            Icon(Icons.Filled.Close, contentDescription = "Close Speed Bar", tint = Color.White.copy(alpha = 0.85f))
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Close Speed Bar",
+                tint = Color.White.copy(alpha = 0.88f)
+            )
         }
     }
 }
 
+/**
+ * Minimalist, Clean Liquid Glass Decoder Mode Selector (`DecoderSelectorDialog`):
+ * - Compact frosted dark glass surface (`RoundedCornerShape(24.dp)`, `Color(0xFF111622).copy(alpha = 0.88f)`,
+ *   subtle `1.dp` `Color.White.copy(alpha = 0.14f)` hairline border, width `340.dp`).
+ * - Simple header (`Decoder Mode` in `17.sp` `FontWeight.SemiBold` and minimal borderless `✕` icon button).
+ * - Borderless list rows separated only by thin `0.5.dp` hairlines (`Color.White.copy(alpha = 0.10f)`).
+ * - Left monochromatic tag (`HW`, `HW+`, `SW`), center title + concise 1-line subtitle,
+ *   and right minimal radio indicator (`#60A5FA` dot/ring when selected, `Color.White.copy(alpha = 0.30f)` ring when unselected).
+ */
 @Composable
 fun DecoderSelectorDialog(
     activeDecoder: DecoderPriority,
     onSelectDecoder: (DecoderPriority) -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
+    val sheetShape = RoundedCornerShape(24.dp)
+
+    Dialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1B1C24),
-        titleContentColor = Color.White,
-        textContentColor = Color.White.copy(alpha = 0.85f),
-        title = { Text("Decoder Mode", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                    DecoderPriority.HW to "Hardware MediaCodec video & audio",
-                    DecoderPriority.HW_PLUS to "Hardware video + FFmpeg SW audio (EAC3 / AC3 / DTS / TrueHD)",
-                    DecoderPriority.SW to "Prefer FFmpeg / software decoding for maximum compatibility"
-                ).forEach { (mode, desc) ->
-                    val selected = activeDecoder == mode
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (selected) PlayerSeekPeriwinkle.copy(alpha = 0.22f) else Color.Transparent)
-                            .clickable {
-                                onSelectDecoder(mode)
-                                onDismiss()
-                            }
-                            .padding(horizontal = 10.dp, vertical = 10.dp)
-                            .testTag("decoder_option_${mode.name.lowercase()}")
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = mode.label,
-                                color = if (selected) PlayerSeekPeriwinkle else Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp
-                            )
-                            Text(
-                                text = desc,
-                                color = Color.White.copy(alpha = 0.65f),
-                                fontSize = 11.sp
-                            )
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .width(340.dp)
+                .shadow(
+                    elevation = 24.dp,
+                    shape = sheetShape,
+                    ambientColor = Color.Black.copy(alpha = 0.55f),
+                    spotColor = Color.Black.copy(alpha = 0.75f)
+                )
+                .clip(sheetShape)
+                .background(Color(0xFF111622).copy(alpha = 0.88f))
+                .border(1.dp, Color.White.copy(alpha = 0.14f), sheetShape)
+                .padding(vertical = 16.dp)
+                .testTag("decoder_selector_dialog")
+        ) {
+            // Simple minimalist header: "Decoder Mode" (17.sp SemiBold) + borderless ✕ button
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, bottom = 8.dp)
+            ) {
+                Text(
+                    text = "Decoder Mode",
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("decoder_dialog_close_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Close Decoder Mode",
+                        tint = Color.White.copy(alpha = 0.72f),
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                thickness = 0.5.dp,
+                color = Color.White.copy(alpha = 0.10f)
+            )
+
+            val entries = DecoderPriority.entries
+            entries.forEachIndexed { index, mode ->
+                val isSelected = mode == activeDecoder
+                val titleText = when (mode) {
+                    DecoderPriority.HW -> "HW decoder"
+                    DecoderPriority.HW_PLUS -> "HW+ decoder"
+                    DecoderPriority.SW -> "SW decoder"
+                }
+                val subtitleText = when (mode) {
+                    DecoderPriority.HW -> "Hardware MediaCodec video & audio"
+                    DecoderPriority.HW_PLUS -> "Hardware video + FFmpeg SW audio"
+                    DecoderPriority.SW -> "Full software decoding for all formats"
+                }
+                val itemTag = when (mode) {
+                    DecoderPriority.HW -> "decoder_option_hw"
+                    DecoderPriority.HW_PLUS -> "decoder_option_hw_plus"
+                    DecoderPriority.SW -> "decoder_option_sw"
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (isSelected) Color.White.copy(alpha = 0.06f)
+                            else Color.Transparent
+                        )
+                        .clickable {
+                            onSelectDecoder(mode)
+                            onDismiss()
                         }
-                        if (selected) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = "Selected",
-                                tint = PlayerSeekPeriwinkle,
-                                modifier = Modifier.size(18.dp)
+                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                        .testTag(itemTag)
+                ) {
+                    // Left: Clean monochromatic tag without a bright blue square fill
+                    Text(
+                        text = mode.badgeText,
+                        color = if (isSelected) Color.White else Color(0xFF94A3B8),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(38.dp)
+                    )
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    // Center: Title (15.sp Medium) + concise 1-line subtitle (12.sp, 0.60f alpha)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = titleText,
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = subtitleText,
+                            color = Color.White.copy(alpha = 0.60f),
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    // Right: Minimal radio indicator (#60A5FA soft sky-blue dot when selected, subtle 0.30f ring when unselected)
+                    Canvas(modifier = Modifier.size(18.dp)) {
+                        val ringStroke = 1.6.dp.toPx()
+                        val radius = (size.minDimension - ringStroke) / 2f
+                        drawCircle(
+                            color = if (isSelected) MxSoftBlueAccent else Color.White.copy(alpha = 0.30f),
+                            radius = radius,
+                            style = Stroke(width = ringStroke)
+                        )
+                        if (isSelected) {
+                            drawCircle(
+                                color = MxSoftBlueAccent,
+                                radius = radius * 0.52f
                             )
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = PlayerSeekPeriwinkle)
+
+                if (index < entries.lastIndex) {
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = Color.White.copy(alpha = 0.10f),
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
             }
         }
-    )
+    }
 }
 
 @Composable

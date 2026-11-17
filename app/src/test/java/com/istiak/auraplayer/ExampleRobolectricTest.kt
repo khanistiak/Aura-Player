@@ -705,19 +705,19 @@ class ExampleRobolectricTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val manager = AppUpdateManager(context)
-        assertEquals("2.6.1", manager.getInstalledVersionName(context))
+        assertEquals("2.6.2", manager.getInstalledVersionName(context))
 
-        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.1"))
-        assertTrue(AppUpdateManager.isNewerVersion("v2.6.2", "2.6.1"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.1", "2.6.1"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.1-rc1", "2.6.1"))
+        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.2"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.3", "2.6.2"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.2", "2.6.2"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.2-rc1", "2.6.2"))
         assertFalse(AppUpdateManager.isNewerVersion("v2.6", "2.6.0"))
-        assertFalse(AppUpdateManager.isNewerVersion("2.5.9", "2.6.1"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.6.1", "2.6.2"))
 
-        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.1", ""))
-        assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.1", "v2.7.0"))
-        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.1", "2.6.1", "v2.7.0"))
-        assertFalse(AppUpdateManager.shouldPromptRelease("v2.6.1", "2.6.1", ""))
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.2", ""))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.2", "v2.7.0"))
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.1", "2.6.2", "v2.7.0"))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.6.2", "2.6.2", ""))
 
         val sampleJson = """
             {
@@ -760,6 +760,31 @@ class ExampleRobolectricTest {
         val defaults = AppSettingsState()
         assertTrue(defaults.showSkipIntroButton)
         assertTrue(defaults.autoPlayNextEpisode)
+    }
+
+    @Test
+    fun `thumbnail cache manager preserves portrait and landscape aspect ratios and uses v2 cache key`() {
+        assertEquals(
+            540 to 960,
+            ThumbnailCacheManager.computeTargetDimensions(1080, 1920, 0)
+        )
+        assertEquals(
+            540 to 960,
+            ThumbnailCacheManager.computeTargetDimensions(1920, 1080, 90)
+        )
+        assertEquals(
+            640 to 360,
+            ThumbnailCacheManager.computeTargetDimensions(3840, 2160, 0)
+        )
+        val key = VideoThumbnailKey(
+            uri = Uri.parse("content://media/external/video/media/42"),
+            filePath = "/storage/emulated/0/Camera/VID_20261117.mp4",
+            durationMs = 15_000L,
+            dateModifiedSec = 1700000000L,
+            width = 1080,
+            height = 1920
+        )
+        assertTrue(key.stableDiskKey.endsWith("_v2"))
     }
 }
 

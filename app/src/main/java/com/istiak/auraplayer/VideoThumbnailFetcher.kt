@@ -24,30 +24,42 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 
 /**
- * Cache-aware model for extracting video thumbnails reliably across large 4K/HEVC `.mkv` files
- * and non-indexed/custom folders.
+ * Cache-aware model for extracting video thumbnails reliably across large 4K/HEVC `.mkv` files,
+ * portrait camera recordings, and non-indexed/custom folders.
  */
 data class VideoThumbnailKey(
     val uri: Uri,
     val filePath: String? = null,
     val durationMs: Long = 0L,
     val dateModifiedSec: Long = 0L,
-    val isVaultItem: Boolean = false
+    val isVaultItem: Boolean = false,
+    val width: Int = 0,
+    val height: Int = 0,
+    val orientationDegrees: Int = 0
 ) {
+    /**
+     * Bumped to `_v2` so legacy low-res (`320x180`) cached thumbnails are automatically
+     * replaced by crisp aspect-preserving frames.
+     */
     val stableDiskKey: String
         get() {
             val base = filePath?.takeIf { it.isNotBlank() } ?: uri.toString()
-            return "${base}_${dateModifiedSec}"
+            return "${base}_${dateModifiedSec}_v2"
         }
 }
 
 /**
  * Two-tier (Memory `LruCache` + Disk `cacheDir/video_thumbs`) video thumbnail cache and
- * multi-stage keyframe extractor optimized for large 4K/HEVC/MKV files.
+ * multi-stage keyframe extractor optimized for large 4K/HEVC/MKV and portrait 1080x1920 files.
  */
 object ThumbnailCacheManager {
-    private const val THUMB_WIDTH = 320
-    private const val THUMB_HEIGHT = 180
+    internal const val LANDSCAPE_TARGET_WIDTH = 640
+    internal const val LANDSCAPE_TARGET_HEIGHT = 360
+    internal const val PORTRAIT_TARGET_WIDTH = 540
+    internal const val PORTRAIT_TARGET_HEIGHT = 960
+    internal const val FALLBACK_MAX_DIMENSION = 640
+    private const val MAX_BITMAP_LONG_EDGE = 960
+    private const val MIN_BITMAP_SHORT_EDGE = 540
     private const val DISK_CACHE_DIR = "video_thumbs"
     private const val DEFAULT_SEEK_US = 3_000_000L
 
@@ -68,6 +80,31 @@ object ThumbnailCacheManager {
     fun getDiskCacheDir(context: Context): File {
         return File(context.cacheDir, DISK_CACHE_DIR).apply {
             if (!exists()) mkdirs()
+        }
+    }
+
+    /**
+     * Computes aspect-preserving target extraction dimensions with a minimum of `540px`
+     * on the shorter side (`540 × 960` for portrait videos, `640 × 360` for landscape videos,
+     * or `640 × 640` when dimensions are unknown).
+     */
+    fun computeTargetDimensions(
+        rawWidth: Int,
+        rawHeight: Int,
+        rotationDegrees: Int = 0
+    ): Pair<Int, Int> {
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        val swapAxes = normalizedRotation == 90 || normalizedRotation == 270
+        val visualWidth = if (swapAxes) rawHeight else rawWidth
+        val visualHeight = if (swapAxes) rawWidth else rawHeight
+
+        if (visualWidth <= 0 || visualHeight <= 0) {
+            return FALLBACK_MAX_DIMENSION to FALLBACK_MAX_DIMENSION
+        }
+        return if (visualHeight > visualWidth) {
+            PORTRAIT_TARGET_WIDTH to PORTRAIT_TARGET_HEIGHT
+        } else {
+            LANDSCAPE_TARGET_WIDTH to LANDSCAPE_TARGET_HEIGHT
         }
     }
 
@@ -102,10 +139,10 @@ object ThumbnailCacheManager {
             }
         }
 
-        // Stage 1: MediaMetadataRetriever nearest-keyframe scaled extraction
+        // Stage 1: MediaMetadataRetriever nearest-keyframe aspect-aware scaled extraction
         var extracted = extractViaMediaMetadataRetriever(context, key)
 
-        // Stage 2: ThumbnailUtils / ContentResolver.loadThumbnail fallback (handles tricky MKV/HEVC profiles)
+        // Stage 2: ThumbnailUtils / ContentResolver.loadThumbnail fallback at 640x640
         if (extracted == null) {
             extracted = extractViaPlatformThumbnailFallback(context, key)
         }
@@ -115,7 +152,7 @@ object ThumbnailCacheManager {
             if (diskFile != null) {
                 runCatching {
                     FileOutputStream(diskFile).use { out ->
-                        extracted.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                        extracted.compress(Bitmap.CompressFormat.JPEG, 90, out)
                     }
                 }
             }
@@ -150,6 +187,24 @@ object ThumbnailCacheManager {
                     ?: 0L
             }
 
+            val metaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+                ?: key.width
+            val metaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 }
+                ?: key.height
+            val metaRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                ?.toIntOrNull()
+                ?: key.orientationDegrees
+
+            val (targetWidth, targetHeight) = computeTargetDimensions(
+                rawWidth = metaWidth,
+                rawHeight = metaHeight,
+                rotationDegrees = metaRotation
+            )
+
             // 10% of duration in microseconds (or 3_000_000 us fallback)
             val targetTimeUs = if (resolvedDurationMs > 0L) {
                 (resolvedDurationMs * 100L).coerceAtLeast(1_000_000L)
@@ -157,8 +212,8 @@ object ThumbnailCacheManager {
                 DEFAULT_SEEK_US
             }
 
-            extractScaledSyncFrame(retriever, targetTimeUs)
-                ?: extractScaledSyncFrame(retriever, 0L)
+            extractScaledSyncFrame(retriever, targetTimeUs, targetWidth, targetHeight)
+                ?: extractScaledSyncFrame(retriever, 0L, targetWidth, targetHeight)
         } catch (_: Throwable) {
             null
         } finally {
@@ -168,15 +223,17 @@ object ThumbnailCacheManager {
 
     private fun extractScaledSyncFrame(
         retriever: MediaMetadataRetriever,
-        timeUs: Long
+        timeUs: Long,
+        targetWidth: Int,
+        targetHeight: Int
     ): Bitmap? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             val scaled = runCatching {
                 retriever.getScaledFrameAtTime(
                     timeUs,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    THUMB_WIDTH,
-                    THUMB_HEIGHT
+                    targetWidth,
+                    targetHeight
                 )
             }.getOrNull()
             if (scaled != null) return scaled
@@ -186,7 +243,7 @@ object ThumbnailCacheManager {
             retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
         }.getOrNull() ?: return null
 
-        return scaleDownBitmapIfNeeded(raw)
+        return scaleDownBitmapPreservingAspect(raw)
     }
 
     @Suppress("DEPRECATION")
@@ -195,27 +252,28 @@ object ThumbnailCacheManager {
         key: VideoThumbnailKey
     ): Bitmap? {
         val localFile = key.filePath?.takeIf { it.isNotBlank() }?.let { File(it) }
+        val fallbackSize = Size(FALLBACK_MAX_DIMENSION, FALLBACK_MAX_DIMENSION)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (localFile != null && localFile.exists()) {
                 val fromFile = runCatching {
                     ThumbnailUtils.createVideoThumbnail(
                         localFile,
-                        Size(THUMB_WIDTH, THUMB_HEIGHT),
+                        fallbackSize,
                         null
                     )
                 }.getOrNull()
-                if (fromFile != null) return scaleDownBitmapIfNeeded(fromFile)
+                if (fromFile != null) return scaleDownBitmapPreservingAspect(fromFile)
             }
             if (!key.isVaultItem) {
                 val fromResolver = runCatching {
                     context.contentResolver.loadThumbnail(
                         key.uri,
-                        Size(THUMB_WIDTH, THUMB_HEIGHT),
+                        fallbackSize,
                         null
                     )
                 }.getOrNull()
-                if (fromResolver != null) return scaleDownBitmapIfNeeded(fromResolver)
+                if (fromResolver != null) return scaleDownBitmapPreservingAspect(fromResolver)
             }
         } else if (localFile != null && localFile.exists()) {
             val legacyThumb = runCatching {
@@ -224,19 +282,27 @@ object ThumbnailCacheManager {
                     MediaStore.Images.Thumbnails.MINI_KIND
                 )
             }.getOrNull()
-            if (legacyThumb != null) return scaleDownBitmapIfNeeded(legacyThumb)
+            if (legacyThumb != null) return scaleDownBitmapPreservingAspect(legacyThumb)
         }
         return null
     }
 
-    private fun scaleDownBitmapIfNeeded(bitmap: Bitmap): Bitmap {
-        if (bitmap.width <= THUMB_WIDTH && bitmap.height <= THUMB_HEIGHT) return bitmap
-        val ratio = minOf(
-            THUMB_WIDTH.toFloat() / bitmap.width.coerceAtLeast(1),
-            THUMB_HEIGHT.toFloat() / bitmap.height.coerceAtLeast(1)
+    private fun scaleDownBitmapPreservingAspect(bitmap: Bitmap): Bitmap {
+        val w = bitmap.width.coerceAtLeast(1)
+        val h = bitmap.height.coerceAtLeast(1)
+        val shortEdge = minOf(w, h)
+        val longEdge = maxOf(w, h)
+        if (shortEdge <= MIN_BITMAP_SHORT_EDGE && longEdge <= MAX_BITMAP_LONG_EDGE) {
+            return bitmap
+        }
+        val ratio = maxOf(
+            MIN_BITMAP_SHORT_EDGE.toFloat() / shortEdge.toFloat(),
+            MAX_BITMAP_LONG_EDGE.toFloat() / longEdge.toFloat()
         ).coerceAtMost(1f)
-        val targetW = (bitmap.width * ratio).toInt().coerceAtLeast(1)
-        val targetH = (bitmap.height * ratio).toInt().coerceAtLeast(1)
+        if (ratio >= 0.99f) return bitmap
+
+        val targetW = (w * ratio).toInt().coerceAtLeast(1)
+        val targetH = (h * ratio).toInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
         if (scaled != bitmap) {
             bitmap.recycle()
