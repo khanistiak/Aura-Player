@@ -47,6 +47,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -95,6 +96,7 @@ enum class ActiveOverlayScreen {
     VAULT,
     SETTINGS,
     APPEARANCE_SETTINGS,
+    LIQUID_GLASS_SETTINGS,
     FOLDER_SETTINGS,
     PLAYER_SETTINGS,
     GESTURE_SETTINGS,
@@ -158,7 +160,14 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             val settingsStore = remember { SettingsDataStore(applicationContext) }
+            val liquidGlassPrefs = remember { LiquidGlassPreferences(applicationContext) }
             val settings by settingsStore.settingsFlow.collectAsState(initial = AppSettingsState())
+            val persistedGlassConfig by liquidGlassPrefs.configFlow.collectAsState(initial = LiquidGlassConfig.Default)
+            var optimisticGlassConfig by remember { mutableStateOf<LiquidGlassConfig?>(null) }
+            LaunchedEffect(persistedGlassConfig) {
+                optimisticGlassConfig = null
+            }
+            val liveGlassConfig = optimisticGlassConfig ?: persistedGlassConfig
             val openUpdateSheetFromNotification by showUpdateSheetRequestState
 
             val useDarkTheme = when (settings.themeMode) {
@@ -176,14 +185,21 @@ class MainActivity : FragmentActivity() {
                 )
             }
 
-            CompositionLocalProvider(LocalFrostedBackdropState provides frostedBackdropState) {
+            CompositionLocalProvider(
+                LocalFrostedBackdropState provides frostedBackdropState,
+                LocalLiquidGlassConfig provides liveGlassConfig
+            ) {
                 AuraPlayerTheme(
-                    darkTheme = useDarkTheme
+                    darkTheme = useDarkTheme,
+                    themePalette = settings.appThemePalette
                 ) {
                     AuraPlayerApp(
                         activity = this,
                         settings = settings,
                         settingsStore = settingsStore,
+                        liquidGlassPrefs = liquidGlassPrefs,
+                        liquidGlassConfig = liveGlassConfig,
+                        onOptimisticGlassConfig = { optimisticGlassConfig = it },
                         initialExternalVideoUri = externalVideoUri,
                         openUpdateSheetFromNotification = openUpdateSheetFromNotification,
                         onConsumeUpdateSheetNotificationIntent = {
@@ -205,6 +221,9 @@ fun AuraPlayerApp(
     activity: FragmentActivity,
     settings: AppSettingsState,
     settingsStore: SettingsDataStore,
+    liquidGlassPrefs: LiquidGlassPreferences = remember(activity) { LiquidGlassPreferences(activity.applicationContext) },
+    liquidGlassConfig: LiquidGlassConfig = LocalLiquidGlassConfig.current,
+    onOptimisticGlassConfig: (LiquidGlassConfig) -> Unit = {},
     initialExternalVideoUri: Uri? = null,
     openUpdateSheetFromNotification: Boolean = false,
     onConsumeUpdateSheetNotificationIntent: () -> Unit = {},
@@ -218,8 +237,12 @@ fun AuraPlayerApp(
     val videoRepository = remember(activity) { VideoRepository(activity.applicationContext) }
     val vaultManager = remember(activity) { PrivateVaultManager(activity.applicationContext) }
     val playlistRepository = remember(activity) { PlaylistRepository(activity.applicationContext) }
+    val playbackProgressStore = remember(activity) { PlaybackProgressStore(activity.applicationContext) }
     val appUpdateManager = remember(activity) { AppUpdateManager(activity.applicationContext) }
     val playlists by playlistRepository.playlistsFlow.collectAsState(initial = emptyList())
+    val playbackProgress by playbackProgressStore.progressFlow.collectAsState(
+        initial = PlaybackProgressSnapshot()
+    )
     var startupUpdateRelease by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
     var showUpdateBottomSheet by rememberSaveable { mutableStateOf(false) }
     var hasCompletedStartupUpdateCheck by rememberSaveable { mutableStateOf(false) }
@@ -269,6 +292,7 @@ fun AuraPlayerApp(
     var showSortOptionsSheet by rememberSaveable { mutableStateOf(false) }
     var overlayScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.NONE) }
     var privateFolderReturnScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.SETTINGS) }
+    var liquidGlassReturnScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.SETTINGS) }
     var mediaInfoTargetVideo by remember { mutableStateOf<VideoItem?>(null) }
 
     var allVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
@@ -287,6 +311,8 @@ fun AuraPlayerApp(
     var extraCreatedFolders by remember { mutableStateOf<Set<String>>(emptySet()) }
     var multiRenameTargetVideo by remember { mutableStateOf<VideoItem?>(null) }
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
+    var pendingDeleteVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var pendingVaultConfirmationVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
 
     // Vault security state
     var isVaultUnlocked by rememberSaveable { mutableStateOf(false) }
@@ -299,6 +325,7 @@ fun AuraPlayerApp(
     var pendingExternalVideoUri by remember { mutableStateOf(initialExternalVideoUri) }
     var activePlayingVideo by remember { mutableStateOf<VideoItem?>(null) }
     var activePlaylist by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var forceResumeOnPlayerStart by remember { mutableStateOf(false) }
 
     LaunchedEffect(pendingExternalVideoUri) {
         val extUri = pendingExternalVideoUri ?: return@LaunchedEffect
@@ -321,12 +348,17 @@ fun AuraPlayerApp(
             height = resolved.height,
             rotationDegrees = resolved.rotationDegrees
         )
+        forceResumeOnPlayerStart = false
         activePlaylist = listOf(resolved)
         activePlayingVideo = resolved
         pendingExternalVideoUri = null
     }
 
-    fun launchPlayer(video: VideoItem, playlist: List<VideoItem>) {
+    fun launchPlayer(
+        video: VideoItem,
+        playlist: List<VideoItem>,
+        forceResumeOnStart: Boolean = false
+    ) {
         val needsResolution = video.width <= 0 || video.height <= 0 ||
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             video.isVaultItem
@@ -337,6 +369,7 @@ fun AuraPlayerApp(
                 height = video.height,
                 rotationDegrees = video.rotationDegrees
             )
+            forceResumeOnPlayerStart = forceResumeOnStart
             activePlaylist = playlist
             activePlayingVideo = video
         } else {
@@ -351,6 +384,7 @@ fun AuraPlayerApp(
                     height = resolved.height,
                     rotationDegrees = resolved.rotationDegrees
                 )
+                forceResumeOnPlayerStart = forceResumeOnStart
                 activePlaylist = updatedPlaylist
                 activePlayingVideo = resolved
             }
@@ -1013,6 +1047,7 @@ fun AuraPlayerApp(
                 overlayScreen == ActiveOverlayScreen.MEDIA_INFO && mediaInfoTargetVideo != null -> "MEDIA_INFO"
                 overlayScreen == ActiveOverlayScreen.CODEC_DIAGNOSTICS -> "CODECS"
                 overlayScreen == ActiveOverlayScreen.APPEARANCE_SETTINGS -> "APPEARANCE_SETTINGS"
+                overlayScreen == ActiveOverlayScreen.LIQUID_GLASS_SETTINGS -> "LIQUID_GLASS_SETTINGS"
                 overlayScreen == ActiveOverlayScreen.PRIVATE_FOLDER_SETTINGS -> "PRIVATE_FOLDER_SETTINGS"
                 overlayScreen == ActiveOverlayScreen.FOLDER_SETTINGS -> "FOLDER_SETTINGS"
                 overlayScreen == ActiveOverlayScreen.PLAYER_SETTINGS -> "PLAYER_SETTINGS"
@@ -1034,9 +1069,20 @@ fun AuraPlayerApp(
                         initialVideo = playing,
                         playlist = activePlaylist,
                         settings = settings,
-                        onSavePlaybackProgress = { vid, posMs ->
+                        initialSavedPositionMs = playbackProgress.savedPositionMsFor(
+                            video = playing,
+                            fallbackSavedPosMs = settings.playbackPositionsMs[playing.id] ?: 0L
+                        ),
+                        forceResumeOnStart = forceResumeOnPlayerStart,
+                        onSavePlaybackProgress = { vid, posMs, totalDurationMs ->
                             coroutineScope.launch {
+                                playbackProgressStore.saveProgress(vid, posMs, totalDurationMs)
                                 settingsStore.recordVideoPlayback(vid.id, vid.uri.toString(), posMs)
+                            }
+                        },
+                        onSaveBrightnessPreference = { videoUriKey, brightness ->
+                            coroutineScope.launch {
+                                settingsStore.savePlayerBrightness(videoUriKey, brightness)
                             }
                         },
                         onOpenSettingsFromPlayer = {
@@ -1054,7 +1100,7 @@ fun AuraPlayerApp(
                             renamePublicVideo(vid, newBase)
                         },
                         onDeleteVideoFromPlayer = { vid ->
-                            deletePublicVideo(vid)
+                            pendingDeleteVideos = listOf(vid)
                         },
                         onPipMetadataChanged = { w, h, rot, activelyPlaying ->
                             pipVideoWidth = w
@@ -1064,6 +1110,7 @@ fun AuraPlayerApp(
                         },
                         onClosePlayer = {
                             isPlayerPlaybackActive = false
+                            forceResumeOnPlayerStart = false
                             activePlayingVideo = null
                         }
                     )
@@ -1298,6 +1345,21 @@ fun AuraPlayerApp(
                                 onUpdateThemeMode = {
                                     coroutineScope.launch { settingsStore.setThemeMode(it) }
                                 },
+                                onUpdateThemePalette = {
+                                    coroutineScope.launch { settingsStore.setAppThemePalette(it) }
+                                },
+                                onUpdateShowFullNames = {
+                                    coroutineScope.launch { settingsStore.setShowFullNames(it) }
+                                },
+                                onUpdateShowNewVideoLabel = {
+                                    coroutineScope.launch { settingsStore.setShowNewVideoLabel(it) }
+                                },
+                                onUpdateNewVideoLabelDaysThreshold = {
+                                    coroutineScope.launch { settingsStore.setNewVideoLabelDaysThreshold(it) }
+                                },
+                                onUpdateShowVideoThumbnails = {
+                                    coroutineScope.launch { settingsStore.setShowVideoThumbnails(it) }
+                                },
                                 onUpdateAppDisguiseMode = { mode ->
                                     coroutineScope.launch { settingsStore.setAppDisguiseMode(mode) }
                                 },
@@ -1305,6 +1367,101 @@ fun AuraPlayerApp(
                                     vaultToastEvent = VaultToastEvent(msg, VaultToastType.INFO)
                                 },
                                 onBack = { overlayScreen = ActiveOverlayScreen.SETTINGS }
+                            )
+                        }
+                    }
+                }
+            }
+            "LIQUID_GLASS_SETTINGS" -> {
+                PastelMeshBackground(modifier = Modifier.fillMaxSize()) {
+                    Scaffold(
+                        containerColor = Color.Transparent,
+                        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+                    ) { paddingValues ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(paddingValues)
+                        ) {
+                            LiquidGlassSettingsScreen(
+                                config = liquidGlassConfig,
+                                onUpdateEnabled = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(enabled = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setEnabled(v) }
+                                },
+                                onUpdateHeaderLiquidGlassEnabled = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(headerLiquidGlassEnabled = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHeaderLiquidGlassEnabled(v) }
+                                },
+                                onUpdateHdrModeEnabled = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(hdrModeEnabled = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHdrModeEnabled(v) }
+                                },
+                                onUpdateFrostPercent = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(frostPercent = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setFrostPercent(v) }
+                                },
+                                onUpdateBackdropOpacity = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(backdropOpacity = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setBackdropOpacity(v) }
+                                },
+                                onUpdateRefractionEdgeWidth = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(refractionEdgeWidth = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setRefractionEdgeWidth(v) }
+                                },
+                                onUpdateRefractionStrength = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(refractionStrength = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setRefractionStrength(v) }
+                                },
+                                onUpdateDepthEffect = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(depthEffect = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setDepthEffect(v) }
+                                },
+                                onUpdateChromaticAberration = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(chromaticAberration = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setChromaticAberration(v) }
+                                },
+                                onUpdateVibrancyEnabled = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(vibrancyEnabled = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setVibrancyEnabled(v) }
+                                },
+                                onUpdateSaturation = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(saturation = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setSaturation(v) }
+                                },
+                                onUpdateBrightness = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(brightness = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setBrightness(v) }
+                                },
+                                onUpdateContrast = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(contrast = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setContrast(v) }
+                                },
+                                onUpdateHighlightStyle = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(highlightStyle = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHighlightStyle(v) }
+                                },
+                                onUpdateHighlightStrength = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(highlightStrength = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHighlightStrength(v) }
+                                },
+                                onUpdateHighlightWidth = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(highlightWidth = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHighlightWidth(v) }
+                                },
+                                onUpdateHighlightSoftness = { v ->
+                                    onOptimisticGlassConfig(liquidGlassConfig.copy(highlightSoftness = v))
+                                    coroutineScope.launch { liquidGlassPrefs.setHighlightSoftness(v) }
+                                },
+                                onResetToDefault = {
+                                    onOptimisticGlassConfig(LiquidGlassConfig.Default)
+                                    coroutineScope.launch { liquidGlassPrefs.resetToDefaults() }
+                                },
+                                onShowCapsuleToast = { msg ->
+                                    vaultToastEvent = VaultToastEvent(msg, VaultToastType.INFO)
+                                },
+                                onBack = { overlayScreen = liquidGlassReturnScreen }
                             )
                         }
                     }
@@ -1342,8 +1499,14 @@ fun AuraPlayerApp(
                                 onUpdateAutoPlayNextEpisode = {
                                     coroutineScope.launch { settingsStore.setAutoPlayNextEpisode(it) }
                                 },
-                                onUpdateShowSkipIntro = {
-                                    coroutineScope.launch { settingsStore.setShowSkipIntroButton(it) }
+                                onUpdateAutoSkipIntro = {
+                                    coroutineScope.launch { settingsStore.setAutoSkipIntro(it) }
+                                },
+                                onUpdateAutoSkipOutro = {
+                                    coroutineScope.launch { settingsStore.setAutoSkipOutro(it) }
+                                },
+                                onUpdateBrightnessMemoryMode = {
+                                    coroutineScope.launch { settingsStore.setBrightnessMemoryMode(it) }
                                 },
                                 onBack = { overlayScreen = ActiveOverlayScreen.SETTINGS }
                             )
@@ -1366,6 +1529,10 @@ fun AuraPlayerApp(
                             SettingsScreen(
                                 settings = settings,
                                 onOpenAppearanceSettings = { overlayScreen = ActiveOverlayScreen.APPEARANCE_SETTINGS },
+                                onOpenLiquidGlassSettings = {
+                                    liquidGlassReturnScreen = ActiveOverlayScreen.SETTINGS
+                                    overlayScreen = ActiveOverlayScreen.LIQUID_GLASS_SETTINGS
+                                },
                                 onOpenFolderSettings = { overlayScreen = ActiveOverlayScreen.FOLDER_SETTINGS },
                                 onOpenPlayerSettings = { overlayScreen = ActiveOverlayScreen.PLAYER_SETTINGS },
                                 onOpenGestureSettings = { overlayScreen = ActiveOverlayScreen.GESTURE_SETTINGS },
@@ -1476,7 +1643,18 @@ fun AuraPlayerApp(
                                     .fillMaxSize()
                                     .padding(innerPadding)
                             ) {
-                            BackHandler(enabled = selectedVideoIds.isEmpty() && selectedTab != MainNavTab.HOME) {
+                            val isDrilledInSubFolder = selectedTab == MainNavTab.HOME && (
+                                (settings.viewMode == LibraryViewMode.TREE && currentTreePath.trim('/').isNotEmpty()) ||
+                                    (settings.viewMode == LibraryViewMode.FOLDER && selectedFlatFolderPath != null)
+                                )
+                            BackHandler(enabled = selectedVideoIds.isEmpty() && isDrilledInSubFolder) {
+                                if (settings.viewMode == LibraryViewMode.TREE && currentTreePath.trim('/').isNotEmpty()) {
+                                    currentTreePath = DirectoryTreeBuilder.getParentPath(currentTreePath)
+                                } else if (settings.viewMode == LibraryViewMode.FOLDER && selectedFlatFolderPath != null) {
+                                    selectedFlatFolderPath = null
+                                }
+                            }
+                            BackHandler(enabled = selectedVideoIds.isEmpty() && !isDrilledInSubFolder && selectedTab != MainNavTab.HOME) {
                                 selectedTab = MainNavTab.HOME
                             }
 
@@ -1488,6 +1666,7 @@ fun AuraPlayerApp(
                                 currentTreePath = currentTreePath,
                                 selectedFlatFolderPath = selectedFlatFolderPath,
                                 settings = settings,
+                                playbackProgress = playbackProgress,
                                 searchQuery = searchQuery,
                                 hasMediaPermission = hasMediaPermission,
                                 isLoading = isScanning,
@@ -1545,9 +1724,13 @@ fun AuraPlayerApp(
                                 },
                                 onOpenSettings = { overlayScreen = ActiveOverlayScreen.SETTINGS },
                                 onMarkAllAsSeen = { markAllVideosAsSeen() },
-                                onNavigateToTreePath = { path -> currentTreePath = path },
+                                onNavigateToTreePath = { path -> currentTreePath = path.trim('/') },
                                 onNavigateUpTree = {
-                                    currentTreePath = DirectoryTreeBuilder.getParentPath(currentTreePath)
+                                    currentTreePath = if (currentTreePath.trim('/').isNotEmpty()) {
+                                        DirectoryTreeBuilder.getParentPath(currentTreePath)
+                                    } else {
+                                        ""
+                                    }
                                 },
                                 onSelectFlatFolder = { path -> selectedFlatFolderPath = path },
                                 onPlayVideo = { vid, list ->
@@ -1555,15 +1738,20 @@ fun AuraPlayerApp(
                                 },
                                 onResumeLastPlayed = {
                                     val lastUri = settings.lastPlayedVideoUri
-                                    val target = allVideos.find { it.uri.toString() == lastUri }
+                                    val target = playbackProgress.findLastPlayedVideo(allVideos)
+                                        ?: allVideos.find { it.uri.toString() == lastUri }
                                         ?: allVideos.firstOrNull()
                                     if (target != null) {
-                                        launchPlayer(target, allVideos)
+                                        launchPlayer(target, allVideos, forceResumeOnStart = true)
                                     }
                                 },
-                                onMoveToVault = { moveVideoToVault(it) },
+                                onMoveToVault = { vid ->
+                                    pendingVaultConfirmationVideos = listOf(vid)
+                                },
                                 onRenameVideo = { vid, newBase -> renamePublicVideo(vid, newBase) },
-                                onDeleteVideo = { deletePublicVideo(it) },
+                                onDeleteVideo = { vid ->
+                                    pendingDeleteVideos = listOf(vid)
+                                },
                                 onGenerateSampleVideos = {
                                     coroutineScope.launch {
                                         isScanning = true
@@ -1612,13 +1800,15 @@ fun AuraPlayerApp(
                                     onAddToPlaylistClick = { showAddToPlaylistSheet = true },
                                     onMoveToVaultClick = {
                                         val batch = selectedVideos
-                                        selectedVideoIds = emptySet()
-                                        moveVideosToVaultBatch(batch)
+                                        if (batch.isNotEmpty()) {
+                                            pendingVaultConfirmationVideos = batch
+                                        }
                                     },
                                     onDeleteClick = {
                                         val batch = selectedVideos
-                                        selectedVideoIds = emptySet()
-                                        deletePublicVideos(batch)
+                                        if (batch.isNotEmpty()) {
+                                            pendingDeleteVideos = batch
+                                        }
                                     },
                                     modifier = Modifier.align(Alignment.BottomCenter)
                                 )
@@ -1639,10 +1829,11 @@ fun AuraPlayerApp(
                                     showResumeButton = allVideos.isNotEmpty(),
                                     onResumeLastPlayed = {
                                         val lastUri = settings.lastPlayedVideoUri
-                                        val target = allVideos.find { it.uri.toString() == lastUri }
+                                        val target = playbackProgress.findLastPlayedVideo(allVideos)
+                                            ?: allVideos.find { it.uri.toString() == lastUri }
                                             ?: allVideos.firstOrNull()
                                         if (target != null) {
-                                            launchPlayer(target, allVideos)
+                                            launchPlayer(target, allVideos, forceResumeOnStart = true)
                                         }
                                     },
                                     modifier = Modifier.align(Alignment.BottomCenter)
@@ -1682,6 +1873,7 @@ fun AuraPlayerApp(
                         val targetVideos = selectedVideos
                         SelectFolderDialog(
                             actionLabel = if (mode == FolderPickerMode.MOVE) "Move" else "Copy",
+                            itemCount = targetVideos.size.coerceAtLeast(1),
                             allDirectories = availableStorageDirs,
                             sourceRelativePaths = if (mode == FolderPickerMode.MOVE) {
                                 targetVideos.map { it.relativePath }.toSet()
@@ -1772,6 +1964,38 @@ fun AuraPlayerApp(
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
+        if (pendingDeleteVideos.isNotEmpty()) {
+            val targets = pendingDeleteVideos
+            DeleteConfirmationDialog(
+                videos = targets,
+                onConfirm = {
+                    pendingDeleteVideos = emptyList()
+                    val targetIds = targets.map { it.id }.toSet()
+                    selectedVideoIds = selectedVideoIds - targetIds
+                    deletePublicVideos(targets)
+                },
+                onDismiss = { pendingDeleteVideos = emptyList() }
+            )
+        }
+
+        if (pendingVaultConfirmationVideos.isNotEmpty()) {
+            val targets = pendingVaultConfirmationVideos
+            MoveToVaultConfirmationDialog(
+                videos = targets,
+                onConfirm = {
+                    pendingVaultConfirmationVideos = emptyList()
+                    val targetIds = targets.map { it.id }.toSet()
+                    selectedVideoIds = selectedVideoIds - targetIds
+                    if (targets.size == 1) {
+                        moveVideoToVault(targets.first())
+                    } else {
+                        moveVideosToVaultBatch(targets)
+                    }
+                },
+                onDismiss = { pendingVaultConfirmationVideos = emptyList() }
+            )
+        }
+
         if (showAllFilesAccessDialog) {
             AlertDialog(
                 onDismissRequest = { dismissAllFilesDialogAndFallbackToMediaPermission() },
@@ -1783,7 +2007,7 @@ fun AuraPlayerApp(
                     Icon(
                         imageVector = Icons.Filled.FolderOpen,
                         contentDescription = null,
-                        tint = Color(0xFF2563EB),
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(30.dp)
                     )
                 },
@@ -1820,8 +2044,8 @@ fun AuraPlayerApp(
                         },
                         shape = RoundedCornerShape(999.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2563EB),
-                            contentColor = Color.White
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
                         ),
                         modifier = Modifier.testTag("grant_all_files_access_button")
                     ) {

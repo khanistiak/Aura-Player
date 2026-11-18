@@ -47,7 +47,7 @@ fun rememberVideoImageLoader(): ImageLoader {
                 add(VideoThumbnailFetcher.Factory(context.applicationContext))
                 add(VideoFrameDecoder.Factory())
             }
-            .crossfade(true)
+            .crossfade(false)
             .build()
     }
 }
@@ -70,6 +70,7 @@ fun HomeScreen(
     currentTreePath: String,
     selectedFlatFolderPath: String?,
     settings: AppSettingsState,
+    playbackProgress: PlaybackProgressSnapshot = PlaybackProgressSnapshot(),
     searchQuery: String,
     hasMediaPermission: Boolean,
     isLoading: Boolean,
@@ -147,10 +148,11 @@ fun HomeScreen(
         }
     }
 
+    val cleanTreePath = currentTreePath.trim('/')
     val topTitle = when {
         selectedTab == MainNavTab.ALL_VIDEOS -> "All Videos"
-        isDrilledInTree -> currentTreePath.substringAfterLast('/')
-        isDrilledInFlatFolder -> selectedFlatFolderPath?.substringAfterLast('/') ?: "Folder"
+        isDrilledInTree -> cleanTreePath.substringAfterLast('/').ifBlank { "Videos" }
+        isDrilledInFlatFolder -> selectedFlatFolderPath?.trim('/')?.substringAfterLast('/')?.ifBlank { "Folder" } ?: "Folder"
         else -> "Videos"
     }
 
@@ -159,7 +161,7 @@ fun HomeScreen(
     val fallbackTopContentPadding = statusBarTop + 72.dp +
         (if (isDrilledInTree) 36.dp else 0.dp) +
         (if (showSearchBar) 54.dp else 0.dp)
-    val bottomContentPadding = navBarBottom + 112.dp
+    val bottomContentPadding = navBarBottom + 124.dp
 
     Box(
         modifier = modifier
@@ -199,6 +201,7 @@ fun HomeScreen(
                     onMarkAllAsSeen = onMarkAllAsSeen,
                     selectedQuickFilter = selectedQuickFilter,
                     onSelectQuickFilter = onSelectQuickFilter,
+                    showFullNames = settings.showFullNames,
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
@@ -234,6 +237,7 @@ fun HomeScreen(
                     onMarkAllAsSeen = onMarkAllAsSeen,
                     selectedQuickFilter = selectedQuickFilter,
                     onSelectQuickFilter = onSelectQuickFilter,
+                    showFullNames = settings.showFullNames,
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
@@ -269,6 +273,7 @@ fun HomeScreen(
                     onMarkAllAsSeen = onMarkAllAsSeen,
                     selectedQuickFilter = selectedQuickFilter,
                     onSelectQuickFilter = onSelectQuickFilter,
+                    showFullNames = settings.showFullNames,
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
@@ -282,6 +287,7 @@ fun HomeScreen(
                     allVideos = videos,
                     settings = settings,
                     imageLoader = imageLoader,
+                    playbackProgress = playbackProgress,
                     selectedIds = selectedIds,
                     onToggleVideoSelection = onToggleVideoSelection,
                     onToggleFolderSelection = onToggleFolderSelection,

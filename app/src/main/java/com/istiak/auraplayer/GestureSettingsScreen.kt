@@ -46,15 +46,11 @@ import androidx.compose.material.icons.filled.Swipe
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -80,8 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import com.istiak.auraplayer.ui.components.MinimalSingleChoiceDialog
 import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
 import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
@@ -106,12 +101,14 @@ private enum class GesturePickerTarget {
 
 /**
  * Dedicated Gestures & Controls Sub-Screen (`GestureSettingsScreen.kt`):
- * - Frozen `ScrollAwareFixedHeader`: `← Gestures`
- * - Section `| Swipe & Speed`: 13 gesture switches with soft `#E3E6FA` active card highlight,
- *   Horizontal swipe sensitivity slider (`10-100`), Hold for multi-x speed slider (`1.5x-3.0x`).
- * - Section `| Double tap`: Seek duration, Seek Area Width slider (`15%-45%`), Left/Center/Right
- *   tap actions, single tap center toggle, hold and drag subtitles toggle.
- * - Section `| Media controls`: Previous, Play/Pause, Next action rows.
+ * - Frozen `ScrollAwareFixedHeader`: `← Gestures & Controls`
+ * - Section `| Swipe & Speed`: 13 uniform-surface gesture switches (state indicated solely by
+ *   the Aura Blue `Switch`), Horizontal swipe sensitivity slider (`10-100`), Hold for multi-x
+ *   speed slider (`1.5x-3.0x`).
+ * - Section `| Double Tap & Subtitles`: Seek duration, Seek Area Width slider (`20%-45%`),
+ *   Left/Center/Right tap actions, single tap center toggle, hold and drag subtitles toggle.
+ * - Section `| Hardware Media Controls`: Previous, Play/Pause, Next action rows using the
+ *   compact `MinimalSingleChoiceDialog`.
  */
 @Composable
 fun GestureSettingsScreen(
@@ -511,14 +508,9 @@ private fun GsFrostedSection(
 }
 
 @Composable
-private fun GsIconBadge(icon: ImageVector, highlighted: Boolean = false) {
+private fun GsIconBadge(icon: ImageVector) {
     val isDark = LocalExtendedPalette.current.isDark
-    val bg = when {
-        highlighted && isDark -> GsCobaltActive.copy(alpha = 0.28f)
-        highlighted -> Color.White.copy(alpha = 0.88f)
-        isDark -> GsCobaltActive.copy(alpha = 0.18f)
-        else -> GsIconBgLight
-    }
+    val bg = if (isDark) GsCobaltActive.copy(alpha = 0.18f) else GsIconBgLight
     Box(
         modifier = Modifier
             .size(32.dp)
@@ -546,11 +538,6 @@ private fun GsHighlightSwitchRow(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val rowBg = when {
-        checked && isDark -> GsCobaltActive.copy(alpha = 0.14f)
-        checked -> GsActiveHighlightLight.copy(alpha = 0.48f)
-        else -> Color.Transparent
-    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -559,11 +546,10 @@ private fun GsHighlightSwitchRow(
                 .fillMaxWidth()
                 .padding(horizontal = 6.dp, vertical = 2.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(rowBg)
                 .clickable { onCheckedChange(!checked) }
                 .padding(horizontal = 8.dp, vertical = 8.dp)
         ) {
-            GsIconBadge(icon = icon, highlighted = checked)
+            GsIconBadge(icon = icon)
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -630,7 +616,7 @@ private fun GsSliderRow(
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                GsIconBadge(icon = icon, highlighted = true)
+                GsIconBadge(icon = icon)
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = title,
@@ -698,7 +684,7 @@ private fun GsInlinePillChoiceRow(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                GsIconBadge(icon = icon, highlighted = true)
+                GsIconBadge(icon = icon)
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = title,
@@ -825,93 +811,12 @@ private fun GsOptionModal(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val palette = LocalExtendedPalette.current
-    val isDark = palette.isDark
-    val cardShape = RoundedCornerShape(24.dp)
-    val bgColor = if (isDark) Color(0xFF141A2E) else Color(0xFFF6F7FF)
-    val bannerBg = if (isDark) Color(0xFF212B4A) else GsActiveHighlightLight
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 20.dp)
-                .widthIn(max = 390.dp)
-                .fillMaxWidth()
-                .shadow(20.dp, cardShape)
-                .clip(cardShape)
-                .background(bgColor)
-                .border(1.dp, if (isDark) Color.White.copy(alpha = 0.2f) else Color.White, cardShape)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(bannerBg)
-                    .padding(horizontal = 20.dp, vertical = 14.dp)
-            ) {
-                Text(
-                    text = title,
-                    color = palette.primaryText,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(16.dp)
-            ) {
-                options.forEach { option ->
-                    val isSelected = option == selected
-                    val rowShape = RoundedCornerShape(14.dp)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(rowShape)
-                            .background(
-                                when {
-                                    isSelected && isDark -> GsCobaltActive.copy(alpha = 0.24f)
-                                    isSelected -> GsActiveHighlightLight
-                                    isDark -> Color.White.copy(alpha = 0.05f)
-                                    else -> Color.White.copy(alpha = 0.72f)
-                                }
-                            )
-                            .border(1.dp, if (isSelected) GsCobaltActive else Color.Transparent, rowShape)
-                            .clickable { onSelect(option) }
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        RadioButton(
-                            selected = isSelected,
-                            onClick = { onSelect(option) },
-                            colors = RadioButtonDefaults.colors(
-                                selectedColor = GsCobaltActive,
-                                unselectedColor = palette.secondaryText
-                            )
-                        )
-                        Text(
-                            text = option,
-                            color = palette.primaryText,
-                            fontSize = 14.sp,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    Button(
-                        onClick = onDismiss,
-                        shape = RoundedCornerShape(999.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = GsSlateHeaderLight,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Text("Cancel")
-                    }
-                }
-            }
-        }
-    }
+    MinimalSingleChoiceDialog(
+        title = title,
+        options = options,
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss
+    )
 }
+

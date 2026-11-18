@@ -3,16 +3,24 @@ package com.istiak.auraplayer
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.net.Uri
+import android.os.Bundle
+import androidx.media3.common.MediaMetadata
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -756,9 +764,10 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `default settings enable skip intro button and autoplay next episode`() {
+    fun `default settings enable auto skip intro outro and autoplay next episode`() {
         val defaults = AppSettingsState()
-        assertTrue(defaults.showSkipIntroButton)
+        assertTrue(defaults.autoSkipIntro)
+        assertTrue(defaults.autoSkipOutro)
         assertTrue(defaults.autoPlayNextEpisode)
     }
 
@@ -785,6 +794,469 @@ class ExampleRobolectricTest {
             height = 1920
         )
         assertTrue(key.stableDiskKey.endsWith("_v2"))
+    }
+
+    @Test
+    fun `buildVideoChapters returns empty without embedded chapters and preserves real chapters`() {
+        val emptyChapters = buildVideoChapters(
+            mediaMetadata = MediaMetadata.EMPTY,
+            durationMs = 120_000L
+        )
+        assertTrue(emptyChapters.isEmpty())
+        assertNull(findChapterForPosition(emptyChapters, 30_000L))
+
+        val extras = Bundle().apply {
+            putStringArray("chapter_titles", arrayOf("Part Two", "Intro"))
+            putLongArray("chapter_starts_ms", longArrayOf(45_000L, 0L))
+        }
+        val metadata = MediaMetadata.Builder().setExtras(extras).build()
+        val parsed = buildVideoChapters(
+            mediaMetadata = metadata,
+            durationMs = 120_000L,
+            metadataChapters = listOf(VideoChapter("Finale", 90_000L))
+        )
+        assertEquals(3, parsed.size)
+        assertEquals(listOf("Intro", "Part Two", "Finale"), parsed.map { it.title })
+        assertEquals(listOf(0L, 45_000L, 90_000L), parsed.map { it.startTimeMs })
+        assertEquals("Part Two", findChapterForPosition(parsed, 60_000L)?.title)
+    }
+
+    @Test
+    fun `playback progress store tracks last played video and clamps 95 percent completion`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = PlaybackProgressStore(context)
+
+        val videoA = VideoItem(
+            id = 9101L,
+            uri = Uri.parse("content://media/external/video/media/9101"),
+            title = "Blade Runner Clip",
+            displayName = "blade_runner.mkv",
+            durationMs = 100_000L,
+            sizeBytes = 50_000_000L,
+            width = 1920,
+            height = 1080,
+            folderName = "Movies",
+            filePath = "/storage/emulated/0/Movies/blade_runner.mkv",
+            dateAddedSec = 1_700_000_000L
+        )
+        val videoB = VideoItem(
+            id = 9102L,
+            uri = Uri.parse("content://media/external/video/media/9102"),
+            title = "Nature 4K",
+            displayName = "nature_4k.mp4",
+            durationMs = 200_000L,
+            sizeBytes = 80_000_000L,
+            width = 3840,
+            height = 2160,
+            folderName = "Camera",
+            filePath = "/storage/emulated/0/DCIM/Camera/nature_4k.mp4",
+            dateAddedSec = 1_700_000_100L
+        )
+
+        store.saveProgress(videoA, savedPositionMs = 45_000L, totalDurationMs = 100_000L)
+        val snap1 = store.getSnapshot()
+        assertTrue(snap1.isLastPlayed(videoA))
+        assertFalse(snap1.isLastPlayed(videoB))
+        assertTrue(snap1.hasStarted(videoA))
+        assertFalse(snap1.hasStarted(videoB))
+        assertEquals(45_000L, snap1.savedPositionMsFor(videoA))
+        assertEquals(0.45f, snap1.watchProgressFractionFor(videoA), 0.001f)
+        assertEquals(videoA.id, snap1.findLastPlayedVideo(listOf(videoA, videoB))?.id)
+
+        // Reaching >= 95% marks the video completed (1.0f) and updates last played to videoB
+        store.saveProgress(videoB, savedPositionMs = 192_000L, totalDurationMs = 200_000L)
+        val snap2 = store.getSnapshot()
+        assertFalse(snap2.isLastPlayed(videoA))
+        assertTrue(snap2.isLastPlayed(videoB))
+        assertEquals(200_000L, snap2.savedPositionMsFor(videoB))
+        assertEquals(1.0f, snap2.watchProgressFractionFor(videoB), 0.001f)
+        assertEquals(0.45f, snap2.watchProgressFractionFor(videoA), 0.001f)
+        assertEquals(videoB.id, snap2.findLastPlayedVideo(listOf(videoA, videoB))?.id)
+    }
+
+    @Test
+    fun `all 17 app theme palettes resolve valid tokens and store round-trip`() {
+        val entries = com.istiak.auraplayer.ui.theme.AppThemePalette.entries
+        assertEquals(17, entries.size)
+        assertEquals(
+            com.istiak.auraplayer.ui.theme.AppThemePalette.AURORA,
+            com.istiak.auraplayer.ui.theme.AppThemePalette.fromStored("UNKNOWN_PALETTE")
+        )
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        entries.forEach { palette ->
+            assertEquals(palette, com.istiak.auraplayer.ui.theme.AppThemePalette.fromStored(palette.name))
+            val lightTokens = com.istiak.auraplayer.ui.theme.resolvePaletteTokens(palette, isDark = false, context = context)
+            val darkTokens = com.istiak.auraplayer.ui.theme.resolvePaletteTokens(palette, isDark = true, context = context)
+            assertTrue(lightTokens.primary != lightTokens.background)
+            assertTrue(darkTokens.primary != darkTokens.background)
+            assertTrue(lightTokens.toColorScheme(isDark = false).primary == lightTokens.primary)
+            assertTrue(darkTokens.toColorScheme(isDark = true).primary == darkTokens.primary)
+        }
+    }
+
+    @Test
+    fun `settings datastore persists appearance palette and file browser visibility flags`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = SettingsDataStore(context)
+
+        store.setAppThemePalette(com.istiak.auraplayer.ui.theme.AppThemePalette.CATPPUCCIN)
+        store.setShowFullNames(true)
+        store.setShowNewVideoLabel(false)
+        store.setNewVideoLabelDaysThreshold(45) // clamps to 30
+        store.setShowVideoThumbnails(false)
+
+        val clampedHigh = store.settingsFlow.first()
+        assertEquals(com.istiak.auraplayer.ui.theme.AppThemePalette.CATPPUCCIN, clampedHigh.appThemePalette)
+        assertTrue(clampedHigh.showFullNames)
+        assertFalse(clampedHigh.showNewVideoLabel)
+        assertEquals(30, clampedHigh.newVideoLabelDaysThreshold)
+        assertFalse(clampedHigh.showVideoThumbnails)
+
+        store.setNewVideoLabelDaysThreshold(0) // clamps to 1
+        store.setShowNewVideoLabel(true)
+        val clampedLow = store.settingsFlow.first()
+        assertTrue(clampedLow.showNewVideoLabel)
+        assertEquals(1, clampedLow.newVideoLabelDaysThreshold)
+    }
+
+    @Test
+    fun `new video label respects toggle and day threshold across video and folder counts`() {
+        val referenceTimeMs = 1_750_000_000_000L
+        val twoDaysAgoSec = (referenceTimeMs / 1000L) - (2L * 86_400L)
+        val tenDaysAgoSec = (referenceTimeMs / 1000L) - (10L * 86_400L)
+
+        val recentVideo = VideoItem(
+            id = 8101L,
+            uri = Uri.parse("content://media/external/video/media/8101"),
+            title = "Recent Clip",
+            displayName = "recent.mp4",
+            durationMs = 12_000L,
+            sizeBytes = 5_000_000L,
+            width = 1920,
+            height = 1080,
+            folderName = "Movies",
+            relativePath = "Movies",
+            dateAddedSec = twoDaysAgoSec,
+            dateModifiedSec = twoDaysAgoSec
+        )
+        val olderVideo = recentVideo.copy(
+            id = 8102L,
+            title = "Older Clip",
+            displayName = "older.mp4",
+            dateAddedSec = tenDaysAgoSec,
+            dateModifiedSec = tenDaysAgoSec
+        )
+
+        assertTrue(
+            recentVideo.isConsideredNew(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = true,
+                newLabelDaysThreshold = 7,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+        assertFalse(
+            olderVideo.isConsideredNew(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = true,
+                newLabelDaysThreshold = 7,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+        assertFalse(
+            recentVideo.isConsideredNew(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = false,
+                newLabelDaysThreshold = 7,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+
+        val tree = DirectoryTreeBuilder.buildTree(listOf(recentVideo, olderVideo))
+        assertEquals(
+            1,
+            tree.unwatchedVideoCount(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = true,
+                newLabelDaysThreshold = 7,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+        assertEquals(
+            2,
+            tree.unwatchedVideoCount(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = true,
+                newLabelDaysThreshold = 14,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+        assertEquals(
+            0,
+            tree.unwatchedVideoCount(
+                watchedVideoIds = emptySet(),
+                seenBaselineEpochSec = 0L,
+                showNewLabel = false,
+                newLabelDaysThreshold = 14,
+                referenceTimeMs = referenceTimeMs
+            )
+        )
+    }
+
+    @Test
+    fun `liquid glass config defaults, highlight styles, and datastore reset work cleanly`() = runBlocking {
+        val defaults = LiquidGlassConfig()
+        assertTrue(defaults.enabled)
+        assertTrue(defaults.headerLiquidGlassEnabled)
+        assertTrue(defaults.hdrModeEnabled)
+        assertEquals(0.20f, defaults.frostPercent, 0.001f)
+        assertEquals(1.00f, defaults.backdropOpacity, 0.001f)
+        assertEquals(1.00f, defaults.refractionEdgeWidth, 0.001f)
+        assertEquals(1.00f, defaults.refractionStrength, 0.001f)
+        assertFalse(defaults.depthEffect)
+        assertTrue(defaults.chromaticAberration)
+        assertTrue(defaults.vibrancyEnabled)
+        assertEquals(1.00f, defaults.saturation, 0.001f)
+        assertEquals(0.00f, defaults.brightness, 0.001f)
+        assertEquals(1.00f, defaults.contrast, 0.001f)
+        assertEquals(HighlightStyle.COMPONENT_DEFAULT, defaults.highlightStyle)
+        assertEquals(1.00f, defaults.highlightStrength, 0.001f)
+        assertEquals(1.00f, defaults.highlightWidth, 0.001f)
+        assertEquals(1.00f, defaults.highlightSoftness, 0.001f)
+
+        assertEquals(5.6f, defaults.effectiveBlurDp().value, 0.01f)
+        assertEquals(0f, defaults.copy(enabled = false).effectiveBlurDp().value, 0.01f)
+        assertEquals(HighlightStyle.SPECULAR_RIM, HighlightStyle.fromStored("specular_rim"))
+        assertEquals(HighlightStyle.TOP_SHEEN, HighlightStyle.fromStored("TOP_SHEEN"))
+        assertEquals(HighlightStyle.COMPONENT_DEFAULT, HighlightStyle.fromStored("invalid"))
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = LiquidGlassPreferences(context)
+        prefs.setEnabled(false)
+        prefs.setHeaderLiquidGlassEnabled(false)
+        prefs.setHdrModeEnabled(false)
+        prefs.setFrostPercent(1.75f)
+        prefs.setBackdropOpacity(0.50f)
+        prefs.setRefractionEdgeWidth(1.60f)
+        prefs.setRefractionStrength(1.45f)
+        prefs.setDepthEffect(true)
+        prefs.setChromaticAberration(false)
+        prefs.setVibrancyEnabled(false)
+        prefs.setSaturation(1.40f)
+        prefs.setBrightness(-0.25f)
+        prefs.setContrast(1.25f)
+        prefs.setHighlightStyle(HighlightStyle.TOP_SHEEN)
+        prefs.setHighlightStrength(1.80f)
+        prefs.setHighlightWidth(1.40f)
+        prefs.setHighlightSoftness(0.60f)
+
+        val updated = prefs.configFlow.first()
+        assertFalse(updated.enabled)
+        assertFalse(updated.headerLiquidGlassEnabled)
+        assertFalse(updated.hdrModeEnabled)
+        assertEquals(1.75f, updated.frostPercent, 0.001f)
+        assertEquals(0.50f, updated.backdropOpacity, 0.001f)
+        assertEquals(1.60f, updated.refractionEdgeWidth, 0.001f)
+        assertEquals(1.45f, updated.refractionStrength, 0.001f)
+        assertTrue(updated.depthEffect)
+        assertFalse(updated.chromaticAberration)
+        assertFalse(updated.vibrancyEnabled)
+        assertEquals(1.40f, updated.saturation, 0.001f)
+        assertEquals(-0.25f, updated.brightness, 0.001f)
+        assertEquals(1.25f, updated.contrast, 0.001f)
+        assertEquals(HighlightStyle.TOP_SHEEN, updated.highlightStyle)
+        assertEquals(1.80f, updated.highlightStrength, 0.001f)
+        assertEquals(1.40f, updated.highlightWidth, 0.001f)
+        assertEquals(0.60f, updated.highlightSoftness, 0.001f)
+
+        prefs.resetToDefaults()
+        val reset = prefs.configFlow.first()
+        assertEquals(LiquidGlassConfig.Default, reset)
+    }
+
+    @Test
+    fun `settings datastore persists auto skip toggles and brightness memory across modes`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = SettingsDataStore(context)
+
+        val initial = AppSettingsState()
+        assertTrue(initial.autoSkipIntro)
+        assertTrue(initial.autoSkipOutro)
+        assertEquals(BrightnessMemoryMode.ALL_VIDEOS, initial.brightnessMemoryMode)
+        assertEquals(-1f, initial.savedGlobalBrightness, 0.001f)
+        assertTrue(initial.savedPerVideoBrightnessMap.isEmpty())
+        assertTrue(initial.autoPlayNextVideo)
+
+        store.setAutoSkipIntro(false)
+        store.setAutoSkipOutro(false)
+        store.setAutoPlayNextEpisode(false)
+
+        // OFF mode ignores brightness writes
+        store.setBrightnessMemoryMode(BrightnessMemoryMode.OFF)
+        store.savePlayerBrightness("content://media/external/video/media/1", 0.72f)
+        val afterOff = store.settingsFlow.first()
+        assertFalse(afterOff.autoSkipIntro)
+        assertFalse(afterOff.autoSkipOutro)
+        assertFalse(afterOff.autoPlayNextVideo)
+        assertEquals(BrightnessMemoryMode.OFF, afterOff.brightnessMemoryMode)
+        assertEquals(-1f, afterOff.savedGlobalBrightness, 0.001f)
+
+        store.setAutoSkipIntro(true)
+        store.setAutoSkipOutro(true)
+        store.setAutoPlayNextEpisode(true)
+
+        // ALL_VIDEOS stores shared global brightness
+        store.setBrightnessMemoryMode(BrightnessMemoryMode.ALL_VIDEOS)
+        store.savePlayerBrightness("content://media/external/video/media/1", 0.65f)
+        val afterGlobal = store.settingsFlow.first()
+        assertEquals(BrightnessMemoryMode.ALL_VIDEOS, afterGlobal.brightnessMemoryMode)
+        assertEquals(0.65f, afterGlobal.savedGlobalBrightness, 0.001f)
+
+        // PER_VIDEO stores isolated per-URI brightness values safely
+        val uriOne = "content://media/external/video/media/101?name=a=b|c"
+        val uriTwo = "content://media/external/video/media/202"
+        store.setBrightnessMemoryMode(BrightnessMemoryMode.PER_VIDEO)
+        store.savePlayerBrightness(uriOne, 0.38f)
+        store.savePlayerBrightness(uriTwo, 0.91f)
+        val afterPerVideo = store.settingsFlow.first()
+        assertEquals(BrightnessMemoryMode.PER_VIDEO, afterPerVideo.brightnessMemoryMode)
+        assertEquals(0.38f, afterPerVideo.savedPerVideoBrightnessMap[uriOne] ?: -1f, 0.001f)
+        assertEquals(0.91f, afterPerVideo.savedPerVideoBrightnessMap[uriTwo] ?: -1f, 0.001f)
+    }
+
+    @Test
+    fun `chapter marker boundaries and intro outro semantic matchers behave accurately`() {
+        val markers = resolveChapterMarkers(
+            chapters = listOf(
+                VideoChapter("Main Episode", 95_000L),
+                VideoChapter("Opening Credits", 5_000L),
+                VideoChapter("End Credits", 1_320_000L),
+                VideoChapter("Post-Credits Preview", 1_410_000L)
+            ),
+            totalDurationMs = 1_440_000L
+        )
+        assertEquals(4, markers.size)
+        assertEquals(ChapterMarker("Opening Credits", 5_000L, 95_000L), markers[0])
+        assertEquals(ChapterMarker("Main Episode", 95_000L, 1_320_000L), markers[1])
+        assertEquals(ChapterMarker("End Credits", 1_320_000L, 1_410_000L), markers[2])
+        assertEquals(ChapterMarker("Post-Credits Preview", 1_410_000L, 1_440_000L), markers[3])
+
+        // Intro semantic matching
+        assertTrue(isIntroChapterTitle("Intro"))
+        assertTrue(isIntroChapterTitle("OP 1"))
+        assertTrue(isIntroChapterTitle("Opening Credits"))
+        assertTrue(isIntroChapterTitle("Main Title"))
+        assertTrue(isIntroChapterTitle("Theme Song"))
+        assertTrue(isIntroChapterTitle("Cold Open / Intro"))
+        assertFalse(isIntroChapterTitle("Cold Open"))
+        assertFalse(isIntroChapterTitle("Previously On Recap"))
+        assertFalse(isIntroChapterTitle("Part 1"))
+
+        // Outro semantic matching
+        assertTrue(isOutroChapterTitle("Outro"))
+        assertTrue(isOutroChapterTitle("ED 1"))
+        assertTrue(isOutroChapterTitle("Ending"))
+        assertTrue(isOutroChapterTitle("End Credits"))
+        assertTrue(isOutroChapterTitle("Closing Credits"))
+        assertFalse(isOutroChapterTitle("Opening Credits"))
+        assertFalse(isOutroChapterTitle("Post-Credits Preview"))
+        assertFalse(isOutroChapterTitle("After Credits Scene"))
+        assertFalse(isOutroChapterTitle("Chapter 4"))
+    }
+
+    @Test
+    fun `container chapter parser extracts Matroska EBML Chapters and MP4 chpl boxes`() {
+        fun ebmlElement(idBytes: ByteArray, payload: ByteArray): ByteArray {
+            val out = ByteArrayOutputStream()
+            out.write(idBytes)
+            // 2-byte EBML VINT size (0x4000 | len) supporting up to 16383 bytes
+            val len = payload.size
+            out.write((0x4000 or len) shr 8)
+            out.write(len and 0xFF)
+            out.write(payload)
+            return out.toByteArray()
+        }
+
+        fun longTo8Bytes(value: Long): ByteArray =
+            ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(value).array()
+
+        val atomIntro = ebmlElement(
+            byteArrayOf(0xB6.toByte()),
+            ebmlElement(byteArrayOf(0x91.toByte()), longTo8Bytes(10_000L * 1_000_000L)) +
+                ebmlElement(
+                    byteArrayOf(0x80.toByte()),
+                    ebmlElement(byteArrayOf(0x85.toByte()), "Intro".toByteArray(Charsets.UTF_8))
+                )
+        )
+        val atomOutro = ebmlElement(
+            byteArrayOf(0xB6.toByte()),
+            ebmlElement(byteArrayOf(0x91.toByte()), longTo8Bytes(1_200_000L * 1_000_000L)) +
+                ebmlElement(
+                    byteArrayOf(0x80.toByte()),
+                    ebmlElement(byteArrayOf(0x85.toByte()), "Outro".toByteArray(Charsets.UTF_8))
+                )
+        )
+        val edition = ebmlElement(byteArrayOf(0x45, 0xB9.toByte()), atomIntro + atomOutro)
+        val chaptersElem = ebmlElement(byteArrayOf(0x10, 0x43, 0xA7.toByte(), 0x70), edition)
+        val segmentElem = ebmlElement(byteArrayOf(0x18, 0x53, 0x80.toByte(), 0x67), chaptersElem)
+        val ebmlHeader = ebmlElement(byteArrayOf(0x1A, 0x45, 0xDF.toByte(), 0xA3.toByte()), byteArrayOf(0x42, 0x86.toByte(), 0x81.toByte(), 0x01))
+
+        val mkvTemp = File.createTempFile("test_chapters_", ".mkv")
+        try {
+            mkvTemp.writeBytes(ebmlHeader + segmentElem)
+            val parsedMkv = FileInputStream(mkvTemp).use { fis ->
+                parseChaptersFromFileChannel(fis.channel)
+            }
+            assertEquals(2, parsedMkv.size)
+            assertEquals(VideoChapter("Intro", 10_000L), parsedMkv[0])
+            assertEquals(VideoChapter("Outro", 1_200_000L), parsedMkv[1])
+        } finally {
+            mkvTemp.delete()
+        }
+
+        // Synthetic MP4 moov -> udta -> chpl (version 1)
+        fun mp4Box(fourCc: String, payload: ByteArray): ByteArray {
+            val total = 8 + payload.size
+            val buf = ByteBuffer.allocate(total).order(ByteOrder.BIG_ENDIAN)
+            buf.putInt(total)
+            buf.put(fourCc.toByteArray(Charsets.US_ASCII))
+            buf.put(payload)
+            return buf.array()
+        }
+
+        val chplBody = ByteArrayOutputStream().apply {
+            write(1) // version = 1
+            write(byteArrayOf(0, 0, 0)) // flags
+            write(byteArrayOf(0, 0, 0, 0)) // reserved (4 bytes for v1)
+            write(2) // chapter count
+            val t1 = "Opening".toByteArray(Charsets.UTF_8)
+            write(longTo8Bytes(15_000L * 10_000L))
+            write(t1.size)
+            write(t1)
+            val t2 = "End Credits".toByteArray(Charsets.UTF_8)
+            write(longTo8Bytes(900_000L * 10_000L))
+            write(t2.size)
+            write(t2)
+        }.toByteArray()
+
+        val mp4Bytes = mp4Box("moov", mp4Box("udta", mp4Box("chpl", chplBody)))
+        val mp4Temp = File.createTempFile("test_chapters_", ".mp4")
+        try {
+            mp4Temp.writeBytes(mp4Bytes)
+            val parsedMp4 = FileInputStream(mp4Temp).use { fis ->
+                parseChaptersFromFileChannel(fis.channel)
+            }
+            assertEquals(2, parsedMp4.size)
+            assertEquals(VideoChapter("Opening", 15_000L), parsedMp4[0])
+            assertEquals(VideoChapter("End Credits", 900_000L), parsedMp4[1])
+        } finally {
+            mp4Temp.delete()
+        }
     }
 }
 

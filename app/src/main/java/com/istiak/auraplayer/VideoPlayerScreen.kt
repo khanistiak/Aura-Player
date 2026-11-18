@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.graphics.drawable.Icon as AndroidIcon
@@ -21,9 +22,16 @@ import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Rational
 import android.util.TypedValue
+import android.view.PixelCopy
+import android.view.SurfaceView
+import android.view.TextureView
 import android.view.WindowManager
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
@@ -103,6 +111,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -115,6 +124,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
@@ -175,6 +185,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -207,6 +218,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Metadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -216,21 +228,33 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.extractor.metadata.id3.ChapterFrame
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import com.istiak.auraplayer.ui.theme.PlayerHudGlassBg
 import com.istiak.auraplayer.ui.theme.PlayerHudGlassBorder
 import com.istiak.auraplayer.ui.theme.PlayerSeekPeriwinkle
 import com.istiak.auraplayer.ui.theme.PlayerVerticalSliderBg
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.channels.FileChannel
 import java.util.Locale
+import kotlin.coroutines.resume
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -247,6 +271,43 @@ data class VideoChapter(
     val title: String,
     val startTimeMs: Long
 )
+
+data class ChapterMarker(
+    val title: String,
+    val startMs: Long,
+    val endMs: Long
+)
+
+sealed interface InteractivePlaybackPopup {
+    val markerId: String
+    val actionLabel: String
+    val subtitleText: String?
+
+    data class SkipIntro(
+        override val markerId: String,
+        val targetSeekMs: Long,
+        override val subtitleText: String? = null
+    ) : InteractivePlaybackPopup {
+        override val actionLabel: String = "Skip Intro ›|"
+    }
+
+    data class SkipOutro(
+        override val markerId: String,
+        val targetSeekMs: Long,
+        val hasPostCredits: Boolean,
+        override val subtitleText: String? = null
+    ) : InteractivePlaybackPopup {
+        override val actionLabel: String = "Skip Outro ›|"
+    }
+
+    data class NextVideo(
+        override val markerId: String,
+        val nextVideoTitle: String
+    ) : InteractivePlaybackPopup {
+        override val actionLabel: String = "Next Video ›|"
+        override val subtitleText: String = nextVideoTitle
+    }
+}
 
 private enum class ActiveGestureType {
     NONE,
@@ -359,7 +420,10 @@ fun VideoPlayerScreen(
     initialVideo: VideoItem,
     playlist: List<VideoItem>,
     settings: AppSettingsState,
-    onSavePlaybackProgress: (VideoItem, Long) -> Unit,
+    initialSavedPositionMs: Long = 0L,
+    forceResumeOnStart: Boolean = false,
+    onSavePlaybackProgress: (VideoItem, Long, Long) -> Unit,
+    onSaveBrightnessPreference: (videoUriKey: String, brightness: Float) -> Unit = { _, _ -> },
     onOpenSettingsFromPlayer: () -> Unit = {},
     onShareVideo: (VideoItem) -> Unit = {},
     onRenameVideoFromPlayer: (VideoItem, String) -> Unit = { _, _ -> },
@@ -368,6 +432,8 @@ fun VideoPlayerScreen(
     onClosePlayer: () -> Unit
 ) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
     val activity = context as? Activity
     val componentActivity = activity as? ComponentActivity
     val hapticFeedback = LocalHapticFeedback.current
@@ -387,6 +453,7 @@ fun VideoPlayerScreen(
         mutableIntStateOf(if (idx >= 0) idx else 0)
     }
     val currentVideo = effectivePlaylist.getOrElse(currentIndex) { initialVideo }
+    var hasConsumedForceResume by remember(initialVideo.id, initialVideo.uri) { mutableStateOf(false) }
 
     var activeDecoderMode by remember(settings.decoderPriority) { mutableStateOf(settings.decoderPriority) }
     var useSwAudioDecoder by remember(activeDecoderMode) {
@@ -416,6 +483,7 @@ fun VideoPlayerScreen(
         ExoPlayer.Builder(context, renderersFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
             .setSeekBackIncrementMs(seekIncrementMs)
             .setSeekForwardIncrementMs(seekIncrementMs)
             .build()
@@ -428,9 +496,12 @@ fun VideoPlayerScreen(
 
     var isPlaying by remember { mutableStateOf(true) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
+    var pendingSeekPositionMs by remember(currentVideo.id) { mutableStateOf<Long?>(null) }
+    var pendingSeekTimestampMs by remember(currentVideo.id) { mutableLongStateOf(0L) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(currentVideo.durationMs.coerceAtLeast(1000L)) }
+    var activePlayerView by remember { mutableStateOf<PlayerView?>(null) }
     var playbackSpeed by remember { mutableFloatStateOf(settings.defaultPlaybackSpeed) }
     var scaleMode by remember { mutableStateOf(PlayerScaleMode.FIT) }
     var zoomScale by remember { mutableFloatStateOf(1.0f) }
@@ -515,9 +586,32 @@ fun VideoPlayerScreen(
     var subtitleSpeed by remember { mutableFloatStateOf(1.0f) }
     var subtitleStyleConfig by remember { mutableStateOf(SubtitleStyleConfig()) }
 
-    // Chapters parsed from MediaMetadata / container cues
-    var chapters by remember(currentVideo.id, durationMs) {
-        mutableStateOf(buildVideoChapters(exoPlayer.mediaMetadata, currentVideo, durationMs))
+    // Chapters parsed dynamically from MediaMetadata / ExoPlayer ID3 / Container (MKV EBML / MP4 chpl)
+    var id3Chapters by remember(currentVideo.id, currentVideo.uri) {
+        mutableStateOf<List<VideoChapter>>(emptyList())
+    }
+    var containerChapters by remember(currentVideo.id, currentVideo.uri) {
+        mutableStateOf<List<VideoChapter>>(emptyList())
+    }
+    val combinedRawChapters = remember(id3Chapters, containerChapters) {
+        (id3Chapters + containerChapters)
+            .distinctBy { it.startTimeMs }
+            .sortedBy { it.startTimeMs }
+    }
+    var chapters by remember(currentVideo.id, currentVideo.uri, durationMs, combinedRawChapters) {
+        mutableStateOf(buildVideoChapters(exoPlayer.mediaMetadata, durationMs, combinedRawChapters))
+    }
+    val chapterMarkers = remember(chapters, durationMs) {
+        resolveChapterMarkers(chapters, durationMs)
+    }
+    val dismissedMarkerIds = remember(currentVideo.id, currentVideo.uri) {
+        mutableStateListOf<String>()
+    }
+    var activeInteractivePopup by remember(currentVideo.id, currentVideo.uri) {
+        mutableStateOf<InteractivePlaybackPopup?>(null)
+    }
+    var popupCountdownFraction by remember(currentVideo.id, currentVideo.uri) {
+        mutableFloatStateOf(1f)
     }
 
     // Equalizer state
@@ -541,8 +635,7 @@ fun VideoPlayerScreen(
 
     // Brightness (0.01..1.0) & Volume (0.0..2.0 for 200% Software Volume Boost)
     var brightnessFraction by remember {
-        val currentAttr = activity?.window?.attributes?.screenBrightness ?: -1f
-        mutableFloatStateOf(if (currentAttr in 0.01f..1.0f) currentAttr else 0.65f)
+        mutableFloatStateOf(resolveInitialDisplayBrightness(context))
     }
     var volumeFraction by remember {
         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
@@ -551,25 +644,54 @@ fun VideoPlayerScreen(
     }
 
     fun persistCurrentVideoMemory(positionOverrideMs: Long? = null) {
-        val pos = (positionOverrideMs ?: exoPlayer.currentPosition).coerceAtLeast(0L)
-        onSavePlaybackProgress(currentVideo, pos)
+        val effectiveDuration = exoPlayer.duration.takeIf { it > 0L }
+            ?: durationMs.takeIf { it > 0L }
+            ?: currentVideo.durationMs.coerceAtLeast(0L)
+        val rawPos = positionOverrideMs
+            ?: pendingResumePromptMs
+            ?: exoPlayer.currentPosition
+        val pos = rawPos.coerceAtLeast(0L)
+        onSavePlaybackProgress(currentVideo, pos, effectiveDuration)
         coroutineScope.launch {
-            playbackMemoryRepository.saveMemory(
-                VideoPlaybackMemory(
-                    videoId = currentVideo.id,
-                    videoUri = currentVideo.uri.toString(),
-                    resumePositionMs = pos,
-                    selectedAudioGroupIndex = selectedAudioGroupIdx,
-                    selectedAudioTrackIndex = selectedAudioTrackIdx,
-                    selectedSubtitleGroupIndex = selectedSubtitleGroupIdx,
-                    selectedSubtitleTrackIndex = selectedSubtitleTrackIdx,
-                    areSubtitlesEnabled = areSubtitlesEnabled,
-                    subtitleSyncOffsetMs = subtitleSyncOffsetMs,
-                    scaleMode = scaleMode,
-                    externalSubtitlePath = latestExternalSubPath
+            withContext(NonCancellable) {
+                playbackMemoryRepository.saveMemory(
+                    VideoPlaybackMemory(
+                        videoId = currentVideo.id,
+                        videoUri = currentVideo.uri.toString(),
+                        resumePositionMs = pos,
+                        selectedAudioGroupIndex = selectedAudioGroupIdx,
+                        selectedAudioTrackIndex = selectedAudioTrackIdx,
+                        selectedSubtitleGroupIndex = selectedSubtitleGroupIdx,
+                        selectedSubtitleTrackIndex = selectedSubtitleTrackIdx,
+                        areSubtitlesEnabled = areSubtitlesEnabled,
+                        subtitleSyncOffsetMs = subtitleSyncOffsetMs,
+                        scaleMode = scaleMode,
+                        externalSubtitlePath = latestExternalSubPath
+                    )
                 )
-            )
+            }
         }
+    }
+
+    val latestPersistCurrentVideoMemory by rememberUpdatedState<(Long?) -> Unit> { posOverride ->
+        persistCurrentVideoMemory(posOverride)
+    }
+    val latestPendingResumePromptMs by rememberUpdatedState(pendingResumePromptMs)
+    val latestCurrentVideo by rememberUpdatedState(currentVideo)
+    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestSettings by rememberUpdatedState(settings)
+    val latestChapterMarkers by rememberUpdatedState(chapterMarkers)
+    val latestCombinedRawChapters by rememberUpdatedState(combinedRawChapters)
+    val latestOnSaveBrightnessPreference by rememberUpdatedState(onSaveBrightnessPreference)
+
+    fun performSeek(targetMs: Long) {
+        val maxDuration = exoPlayer.duration.takeIf { it > 0L } ?: durationMs.coerceAtLeast(1000L)
+        val clamped = targetMs.coerceIn(0L, maxDuration)
+        pendingSeekPositionMs = clamped
+        pendingSeekTimestampMs = System.currentTimeMillis()
+        currentPositionMs = clamped
+        exoPlayer.seekTo(clamped)
+        persistCurrentVideoMemory(positionOverrideMs = clamped)
     }
 
     fun attachSubtitleUriToPlayer(subUri: Uri, subMime: String, subLabel: String, localPath: String? = null) {
@@ -748,6 +870,50 @@ fun VideoPlayerScreen(
         }
     }
 
+    // Extract embedded container chapters (Matroska EBML Chapters / MP4 chpl) off the main thread
+    LaunchedEffect(currentVideo.uri, currentVideo.vaultFilePath, currentVideo.filePath) {
+        val localPath = currentVideo.vaultFilePath?.takeIf { it.isNotBlank() }
+            ?: currentVideo.filePath?.takeIf { it.isNotBlank() }
+        val directPlaybackUri = if (currentVideo.isVaultItem && !currentVideo.vaultFilePath.isNullOrBlank()) {
+            Uri.fromFile(File(currentVideo.vaultFilePath))
+        } else {
+            currentVideo.uri
+        }
+        val parsedContainerChapters = extractContainerChapters(
+            context = context,
+            uri = directPlaybackUri,
+            directFilePath = localPath
+        )
+        if (parsedContainerChapters.isNotEmpty()) {
+            containerChapters = parsedContainerChapters
+        }
+    }
+
+    // Apply Remember display brightness preference on video open / switch / mode change
+    LaunchedEffect(currentVideo.uri, settings.brightnessMemoryMode) {
+        val targetSavedBrightness = when (settings.brightnessMemoryMode) {
+            BrightnessMemoryMode.OFF -> null
+            BrightnessMemoryMode.ALL_VIDEOS -> settings.savedGlobalBrightness.takeIf { it in 0.01f..1.0f }
+            BrightnessMemoryMode.PER_VIDEO ->
+                settings.savedPerVideoBrightnessMap[currentVideo.uri.toString()]?.takeIf { it in 0.01f..1.0f }
+        }
+        if (targetSavedBrightness != null) {
+            brightnessFraction = targetSavedBrightness
+            activity?.window?.let { win ->
+                val lp = win.attributes
+                lp.screenBrightness = targetSavedBrightness
+                win.attributes = lp
+            }
+        } else {
+            brightnessFraction = resolveInitialDisplayBrightness(context)
+            activity?.window?.let { win ->
+                val lp = win.attributes
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                win.attributes = lp
+            }
+        }
+    }
+
     // Load media item and restore smart per-video memory when currentVideo or activeDecoderMode changes
     LaunchedEffect(currentVideo.uri, activeDecoderMode) {
         hasAppliedRememberedTracks = false
@@ -806,37 +972,66 @@ fun VideoPlayerScreen(
         exoPlayer.volume = if (isMuted) 0f else 1f
         exoPlayer.prepare()
 
-        val rememberedPos = savedMem?.resumePositionMs ?: settings.playbackPositionsMs[currentVideo.id] ?: 0L
-        val maxPlayablePos = (currentVideo.durationMs - 1500L).coerceAtLeast(rememberedPos + 1L)
-        val hasPartialProgress = rememberedPos > 5000L && rememberedPos < maxPlayablePos
-        durationMs = currentVideo.durationMs.coerceAtLeast(1000L)
+        val fallbackInitialPos = if (currentVideo.id == initialVideo.id && currentVideo.uri == initialVideo.uri) {
+            initialSavedPositionMs
+        } else {
+            0L
+        }
+        val rememberedPos = savedMem?.resumePositionMs
+            ?: fallbackInitialPos.takeIf { it > 0L }
+            ?: settings.playbackPositionsMs[currentVideo.id]
+            ?: 0L
+        val effectiveDuration = currentVideo.durationMs.coerceAtLeast(1000L)
+        val maxPlayablePos = (effectiveDuration - 1500L).coerceAtLeast(0L)
+        val isAlreadyCompleted = effectiveDuration > 0L && (
+            rememberedPos >= maxPlayablePos ||
+                (rememberedPos.toFloat() / effectiveDuration.toFloat()) >= 0.95f
+            )
+        val resumablePos = if (isAlreadyCompleted) 0L else rememberedPos.coerceAtLeast(0L)
+        val hasPartialProgress = resumablePos > 5000L
+        val shouldForceResume = forceResumeOnStart && !hasConsumedForceResume &&
+            currentVideo.id == initialVideo.id && currentVideo.uri == initialVideo.uri
+        if (shouldForceResume) {
+            hasConsumedForceResume = true
+        }
+        durationMs = effectiveDuration
+        pendingSeekPositionMs = null
 
         when {
             preservedReloadPositionMs >= 0L -> {
                 val reloadPos = preservedReloadPositionMs.also { preservedReloadPositionMs = -1L }
                 pendingResumePromptMs = null
-                exoPlayer.seekTo(reloadPos)
-                currentPositionMs = reloadPos
+                performSeek(reloadPos)
                 exoPlayer.playWhenReady = true
             }
-            settings.resumePlaybackMode == ResumePlaybackMode.ASK && hasPartialProgress -> {
-                pendingResumePromptMs = rememberedPos
+            shouldForceResume && resumablePos > 0L -> {
+                pendingResumePromptMs = null
+                exoPlayer.seekTo(resumablePos)
+                currentPositionMs = resumablePos
+                exoPlayer.playWhenReady = true
+                persistCurrentVideoMemory(resumablePos)
+            }
+            settings.resumePlaybackMode == ResumePlaybackMode.ASK && hasPartialProgress && !shouldForceResume -> {
+                pendingResumePromptMs = resumablePos
                 resumePromptCountdownSec = 4
                 currentPositionMs = 0L
                 exoPlayer.seekTo(0L)
                 exoPlayer.playWhenReady = false
+                onSavePlaybackProgress(currentVideo, resumablePos, effectiveDuration)
             }
-            settings.resumePlaybackMode == ResumePlaybackMode.RESUME && rememberedPos > 0L -> {
+            settings.resumePlaybackMode == ResumePlaybackMode.RESUME && resumablePos > 0L -> {
                 pendingResumePromptMs = null
-                exoPlayer.seekTo(rememberedPos)
-                currentPositionMs = rememberedPos
+                exoPlayer.seekTo(resumablePos)
+                currentPositionMs = resumablePos
                 exoPlayer.playWhenReady = true
+                persistCurrentVideoMemory(resumablePos)
             }
             else -> {
                 pendingResumePromptMs = null
                 currentPositionMs = 0L
                 exoPlayer.seekTo(0L)
                 exoPlayer.playWhenReady = true
+                persistCurrentVideoMemory(0L)
             }
         }
     }
@@ -932,8 +1127,16 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Keep-screen-on & orientation restoration when leaving player
+    // Keep-screen-on, adaptive status bar brightness, & orientation restoration when leaving player
     val localView = LocalView.current
+    val latestIsDarkTheme by rememberUpdatedState(LocalExtendedPalette.current.isDark)
+    val isAdaptiveLightStatusBar = rememberVideoLuminanceState(
+        playerView = activePlayerView,
+        isControlsVisible = isControlsVisible,
+        isPlaying = isPlaying,
+        isInPipMode = isInPipMode
+    )
+
     DisposableEffect(Unit) {
         activity?.window?.let { win ->
             win.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -944,8 +1147,14 @@ fun VideoPlayerScreen(
         onDispose {
             activity?.window?.let { win ->
                 win.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                WindowCompat.getInsetsController(win, localView)
-                    .show(WindowInsetsCompat.Type.systemBars())
+                val lp = win.attributes
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                win.attributes = lp
+                WindowCompat.getInsetsController(win, localView).apply {
+                    show(WindowInsetsCompat.Type.systemBars())
+                    isAppearanceLightStatusBars = !latestIsDarkTheme
+                    isAppearanceLightNavigationBars = !latestIsDarkTheme
+                }
             }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
@@ -962,6 +1171,20 @@ fun VideoPlayerScreen(
                     insetsController.show(WindowInsetsCompat.Type.systemBars())
                 } else {
                     insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
+    }
+
+    // Dynamically match status bar icons/text to top scrim (white) or sampled video frame luminance
+    LaunchedEffect(isControlsVisible, isAdaptiveLightStatusBar, isInPipMode) {
+        if (!isInPipMode) {
+            activity?.window?.let { win ->
+                val insetsController = WindowCompat.getInsetsController(win, localView)
+                insetsController.isAppearanceLightStatusBars = if (isControlsVisible) {
+                    false
+                } else {
+                    isAdaptiveLightStatusBar
                 }
             }
         }
@@ -1052,8 +1275,7 @@ fun VideoPlayerScreen(
                 when (intent.getIntExtra(EXTRA_PIP_CONTROL_TYPE, -1)) {
                     PIP_CONTROL_REWIND -> {
                         val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                        exoPlayer.seekTo(target)
-                        currentPositionMs = target
+                        performSeek(target)
                     }
                     PIP_CONTROL_PLAY_PAUSE -> {
                         if (exoPlayer.isPlaying) {
@@ -1068,8 +1290,7 @@ fun VideoPlayerScreen(
                     PIP_CONTROL_FORWARD -> {
                         val total = exoPlayer.duration.takeIf { it > 0L } ?: durationMs
                         val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(total)
-                        exoPlayer.seekTo(target)
-                        currentPositionMs = target
+                        performSeek(target)
                     }
                 }
             }
@@ -1113,6 +1334,13 @@ fun VideoPlayerScreen(
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (!playing &&
+                    exoPlayer.playbackState != Player.STATE_IDLE &&
+                    exoPlayer.playbackState != Player.STATE_ENDED &&
+                    latestPendingResumePromptMs == null
+                ) {
+                    latestPersistCurrentVideoMemory(null)
+                }
             }
 
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -1120,7 +1348,43 @@ fun VideoPlayerScreen(
             }
 
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                chapters = buildVideoChapters(mediaMetadata, currentVideo, durationMs)
+                chapters = buildVideoChapters(mediaMetadata, durationMs, latestCombinedRawChapters)
+            }
+
+            override fun onMetadata(metadata: Metadata) {
+                val extracted = mutableListOf<VideoChapter>()
+                for (i in 0 until metadata.length()) {
+                    val entry = metadata.get(i)
+                    if (entry is ChapterFrame && entry.startTimeMs >= 0) {
+                        var title = ""
+                        for (s in 0 until entry.subFrameCount) {
+                            val sub = entry.getSubFrame(s)
+                            if (sub is TextInformationFrame && sub.id == "TIT2") {
+                                title = sub.values.firstOrNull().orEmpty().trim()
+                                if (title.isNotEmpty()) break
+                            }
+                        }
+                        if (title.isEmpty()) {
+                            title = entry.chapterId.trim().ifEmpty { "Chapter ${extracted.size + 1}" }
+                        }
+                        extracted.add(
+                            VideoChapter(
+                                title = title,
+                                startTimeMs = entry.startTimeMs.toLong()
+                            )
+                        )
+                    }
+                }
+                if (extracted.isNotEmpty()) {
+                    val mergedId3 = (id3Chapters + extracted)
+                        .distinctBy { it.startTimeMs }
+                        .sortedBy { it.startTimeMs }
+                    id3Chapters = mergedId3
+                    val combined = (mergedId3 + containerChapters)
+                        .distinctBy { it.startTimeMs }
+                        .sortedBy { it.startTimeMs }
+                    chapters = buildVideoChapters(exoPlayer.mediaMetadata, durationMs, combined)
+                }
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -1186,9 +1450,13 @@ fun VideoPlayerScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (exoPlayer.duration > 0) {
                     durationMs = exoPlayer.duration
-                    chapters = buildVideoChapters(exoPlayer.mediaMetadata, currentVideo, durationMs)
+                    chapters = buildVideoChapters(exoPlayer.mediaMetadata, durationMs, latestCombinedRawChapters)
                 }
                 if (playbackState == Player.STATE_ENDED) {
+                    val completedPos = exoPlayer.duration.takeIf { it > 0L }
+                        ?: latestDurationMs.takeIf { it > 0L }
+                        ?: latestCurrentVideo.durationMs.coerceAtLeast(1L)
+                    latestPersistCurrentVideoMemory(completedPos)
                     if (sleepTimerSelection == SleepTimerSelection.EndOfVideo) {
                         coroutineScope.launch {
                             executeSleepTimerFadeAndExit()
@@ -1196,9 +1464,16 @@ fun VideoPlayerScreen(
                     } else if (shuffleActive && effectivePlaylist.size > 1) {
                         val nextIdx = (effectivePlaylist.indices - currentIndex).random()
                         currentIndex = nextIdx
-                    } else if (settings.autoPlayNextEpisode && currentIndex < effectivePlaylist.lastIndex) {
-                        persistCurrentVideoMemory(0L)
-                        currentIndex++
+                    } else if (latestSettings.autoPlayNextEpisode && currentIndex < effectivePlaylist.lastIndex) {
+                        val nextVid = effectivePlaylist.getOrNull(currentIndex + 1)
+                        val nextMarkerKey = "next_video_${latestCurrentVideo.id}"
+                        if (nextVid != null && nextMarkerKey !in dismissedMarkerIds) {
+                            activeInteractivePopup = InteractivePlaybackPopup.NextVideo(
+                                markerId = nextMarkerKey,
+                                nextVideoTitle = nextVid.title
+                            )
+                        }
+                        isControlsVisible = true
                     } else {
                         isControlsVisible = true
                     }
@@ -1208,32 +1483,165 @@ fun VideoPlayerScreen(
         exoPlayer.addListener(listener)
 
         onDispose {
-            persistCurrentVideoMemory()
+            latestPersistCurrentVideoMemory(null)
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
     }
 
-    // Poll playback position smoothly + enforce A-B repeat loop
+    // 6-second interactive countdown timer for Skip Intro, Skip Outro, and Next Video popups:
+    // If not tapped within 6 seconds, smoothly hides the popup and records the marker in dismissedMarkerIds.
+    LaunchedEffect(activeInteractivePopup?.markerId) {
+        val currentPopup = activeInteractivePopup ?: return@LaunchedEffect
+        val totalWindowMs = 6000L
+        val stepMs = 50L
+        var elapsedMs = 0L
+        popupCountdownFraction = 1f
+        while (elapsedMs < totalWindowMs) {
+            delay(stepMs)
+            if (activeInteractivePopup?.markerId != currentPopup.markerId) return@LaunchedEffect
+            elapsedMs += stepMs
+            popupCountdownFraction = (1f - (elapsedMs.toFloat() / totalWindowMs.toFloat())).coerceIn(0f, 1f)
+        }
+        if (activeInteractivePopup?.markerId == currentPopup.markerId) {
+            if (currentPopup.markerId !in dismissedMarkerIds) {
+                dismissedMarkerIds.add(currentPopup.markerId)
+            }
+            activeInteractivePopup = null
+        }
+    }
+
+    // Poll playback position smoothly + A-B repeat + Interactive Skip Intro / Skip Outro / Next Video popup detection
     LaunchedEffect(exoPlayer, isPlaying, currentVideo, abRepeatStartMs, abRepeatEndMs) {
         while (true) {
             val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-            if (!isScrubbing) {
+            val pendingTarget = pendingSeekPositionMs
+            if (pendingTarget != null) {
+                val elapsedSinceSeek = System.currentTimeMillis() - pendingSeekTimestampMs
+                if (abs(pos - pendingTarget) <= 500L || elapsedSinceSeek >= 2000L) {
+                    pendingSeekPositionMs = null
+                    if (!isScrubbing) {
+                        currentPositionMs = pos
+                    }
+                } else if (!isScrubbing) {
+                    currentPositionMs = pendingTarget
+                }
+            } else if (!isScrubbing) {
                 currentPositionMs = pos
             }
             if (exoPlayer.duration > 0 && exoPlayer.duration != durationMs) {
                 durationMs = exoPlayer.duration
-                chapters = buildVideoChapters(exoPlayer.mediaMetadata, currentVideo, durationMs)
+                chapters = buildVideoChapters(exoPlayer.mediaMetadata, durationMs, latestCombinedRawChapters)
             }
             val startA = abRepeatStartMs
             val endB = abRepeatEndMs
             if (startA != null && endB != null && endB > startA && pos >= endB) {
-                exoPlayer.seekTo(startA)
-                if (!isScrubbing) {
-                    currentPositionMs = startA
+                performSeek(startA)
+            }
+
+            // Interactive popup detection for Auto-Skip Intro, Auto-Skip Outro, & Autoplay Next Video
+            val totalDur = exoPlayer.duration.takeIf { it > 0L } ?: durationMs
+            if (isPlaying &&
+                pendingTarget == null &&
+                !isScrubbing &&
+                latestPendingResumePromptMs == null &&
+                totalDur > 0L
+            ) {
+                val activeMarkers = latestChapterMarkers
+                val introMatch = if (latestSettings.autoSkipIntro) {
+                    activeMarkers.firstOrNull { marker ->
+                        val chapterKey = "intro:${marker.startMs}:${marker.title}"
+                        chapterKey !in dismissedMarkerIds &&
+                            isIntroChapterTitle(marker.title) &&
+                            (marker.endMs - marker.startMs) >= 1000L &&
+                            pos in marker.startMs..(marker.endMs - 500L)
+                    }
+                } else {
+                    null
+                }
+
+                val fallbackOpeningIntroActive = latestSettings.autoSkipIntro &&
+                    introMatch == null &&
+                    activeMarkers.none { isIntroChapterTitle(it.title) } &&
+                    totalDur >= 180_000L &&
+                    pos in 5_000L..90_000L &&
+                    "intro:opening_window" !in dismissedMarkerIds
+
+                val outroMatch = if (latestSettings.autoSkipOutro) {
+                    activeMarkers.firstOrNull { marker ->
+                        val chapterKey = "outro:${marker.startMs}:${marker.title}"
+                        chapterKey !in dismissedMarkerIds &&
+                            isOutroChapterTitle(marker.title) &&
+                            (marker.endMs - marker.startMs) >= 1000L &&
+                            pos in marker.startMs..(marker.endMs - 500L)
+                    }
+                } else {
+                    null
+                }
+
+                val remainingMs = (totalDur - pos).coerceAtLeast(0L)
+                val hasNextInPlaylist = effectivePlaylist.size > 1 && currentIndex < effectivePlaylist.lastIndex
+                val nextVideoMarkerKey = "next_video_${currentVideo.id}"
+                val shouldShowNextVideoPopup = latestSettings.autoPlayNextEpisode &&
+                    hasNextInPlaylist &&
+                    remainingMs in 1L..10_000L &&
+                    nextVideoMarkerKey !in dismissedMarkerIds
+
+                when {
+                    introMatch != null -> {
+                        val key = "intro:${introMatch.startMs}:${introMatch.title}"
+                        if (activeInteractivePopup?.markerId != key) {
+                            activeInteractivePopup = InteractivePlaybackPopup.SkipIntro(
+                                markerId = key,
+                                targetSeekMs = introMatch.endMs.coerceIn(0L, totalDur),
+                                subtitleText = introMatch.title
+                            )
+                        }
+                    }
+                    fallbackOpeningIntroActive -> {
+                        val key = "intro:opening_window"
+                        if (activeInteractivePopup?.markerId != key) {
+                            activeInteractivePopup = InteractivePlaybackPopup.SkipIntro(
+                                markerId = key,
+                                targetSeekMs = (pos + 85_000L).coerceAtMost(totalDur)
+                            )
+                        }
+                    }
+                    outroMatch != null -> {
+                        val key = "outro:${outroMatch.startMs}:${outroMatch.title}"
+                        if (activeInteractivePopup?.markerId != key) {
+                            activeInteractivePopup = InteractivePlaybackPopup.SkipOutro(
+                                markerId = key,
+                                targetSeekMs = outroMatch.endMs.coerceIn(0L, totalDur),
+                                hasPostCredits = outroMatch.endMs < totalDur - 1500L,
+                                subtitleText = outroMatch.title
+                            )
+                        }
+                    }
+                    shouldShowNextVideoPopup -> {
+                        val nextVid = effectivePlaylist.getOrNull(currentIndex + 1)
+                        if (nextVid != null && activeInteractivePopup?.markerId != nextVideoMarkerKey) {
+                            activeInteractivePopup = InteractivePlaybackPopup.NextVideo(
+                                markerId = nextVideoMarkerKey,
+                                nextVideoTitle = nextVid.title
+                            )
+                        }
+                    }
                 }
             }
+
             delay(180L)
+        }
+    }
+
+    // Periodic 2-second playback progress persistence during active playback
+    LaunchedEffect(exoPlayer, isPlaying, currentVideo) {
+        if (!isPlaying) return@LaunchedEffect
+        while (true) {
+            delay(2000L)
+            if (exoPlayer.isPlaying && pendingResumePromptMs == null && !isScrubbing) {
+                persistCurrentVideoMemory()
+            }
         }
     }
 
@@ -1268,8 +1676,7 @@ fun VideoPlayerScreen(
             if (pendingResumePromptMs != resumeMs) return@LaunchedEffect
         }
         pendingResumePromptMs = null
-        exoPlayer.seekTo(resumeMs)
-        currentPositionMs = resumeMs
+        performSeek(resumeMs)
         exoPlayer.playWhenReady = true
     }
 
@@ -1285,10 +1692,13 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Automatically dismiss speed bar whenever HUD controls hide, screen locks, or a side drawer opens
+    // Automatically dismiss speed bar & extra top toolbar whenever HUD controls hide, screen locks, or a side drawer opens
     LaunchedEffect(isControlsVisible, isScreenLocked, activeDrawer) {
         if (!isControlsVisible || isScreenLocked || activeDrawer != PlayerDrawerType.NONE) {
             showSpeedBar = false
+        }
+        if (!isControlsVisible) {
+            isExtraRibbonExpanded = false
         }
     }
 
@@ -1362,9 +1772,11 @@ fun VideoPlayerScreen(
                     resizeMode = scaleMode.resizeMode
                     player = exoPlayer
                     keepScreenOn = true
+                    activePlayerView = this
                 }
             },
             update = { playerView ->
+                activePlayerView = playerView
                 playerView.player = exoPlayer
                 playerView.resizeMode = if (isInPipMode) {
                     AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -1443,8 +1855,7 @@ fun VideoPlayerScreen(
                                 } else {
                                     (exoPlayer.currentPosition - seekDeltaMs).coerceAtLeast(0L)
                                 }
-                                exoPlayer.seekTo(nextPos)
-                                currentPositionMs = nextPos
+                                performSeek(nextPos)
                                 showCenterToast(
                                     if (isRightZone) "+${settings.doubleTapSeekSeconds}s" else "-${settings.doubleTapSeekSeconds}s"
                                 )
@@ -1464,8 +1875,7 @@ fun VideoPlayerScreen(
                                     persistCurrentVideoMemory()
                                     currentIndex--
                                 } else {
-                                    exoPlayer.seekTo(0L)
-                                    currentPositionMs = 0L
+                                    performSeek(0L)
                                 }
                                 showCenterToast("Previous")
                             }
@@ -1477,8 +1887,7 @@ fun VideoPlayerScreen(
                                 } else {
                                     val target = (exoPlayer.currentPosition + settings.doubleTapSeekSeconds * 1000L)
                                         .coerceAtMost(durationMs)
-                                    exoPlayer.seekTo(target)
-                                    currentPositionMs = target
+                                    performSeek(target)
                                     showCenterToast("+${settings.doubleTapSeekSeconds}s")
                                 }
                             }
@@ -1612,12 +2021,17 @@ fun VideoPlayerScreen(
                         }
 
                         if (gestureType == ActiveGestureType.SCRUB) {
-                            exoPlayer.seekTo(targetScrubMs)
-                            currentPositionMs = targetScrubMs
+                            performSeek(targetScrubMs)
                             centerBanner = null
                         }
                         if (gestureType == ActiveGestureType.BRIGHTNESS) {
                             rightEdgeBrightnessVisible = false
+                            if (latestSettings.brightnessMemoryMode != BrightnessMemoryMode.OFF) {
+                                latestOnSaveBrightnessPreference(
+                                    latestCurrentVideo.uri.toString(),
+                                    brightnessFraction
+                                )
+                            }
                         }
                         if (gestureType == ActiveGestureType.VOLUME) {
                             leftEdgeVolumeVisible = false
@@ -1747,108 +2161,128 @@ fun VideoPlayerScreen(
             }
         }
 
-        // Floating "+85s Skip Intro" Pill during the first 3 minutes of playback (synced with Player HUD)
-        val showSkipIntroPill = settings.showSkipIntroButton &&
-            isControlsVisible &&
+        // Interactive 6-Second Tap-to-Execute Liquid Glass Playback Popup
+        // ("Skip Intro ›|", "Skip Outro ›|", "Next Video ›|") with circular countdown progress ring
+        val popupVisible = activeInteractivePopup != null &&
             !isScreenLocked &&
             !isInPipMode &&
             !isScrubbing &&
-            activeDrawer == PlayerDrawerType.NONE &&
-            currentPositionMs in 0L..180_000L &&
-            !skipIntroDismissed
+            activeDrawer == PlayerDrawerType.NONE
         AnimatedVisibility(
-            visible = showSkipIntroPill,
-            enter = fadeIn(tween(220)) + slideInVertically { it / 2 },
-            exit = fadeOut(tween(200)) + slideOutVertically { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(start = 20.dp, bottom = 116.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(PlayerHudGlassBg)
-                    .border(1.dp, PlayerSeekPeriwinkle.copy(alpha = 0.65f), RoundedCornerShape(999.dp))
-                    .clickable {
-                        val target = (exoPlayer.currentPosition + 85_000L).coerceAtMost(durationMs)
-                        exoPlayer.seekTo(target)
-                        currentPositionMs = target
-                        skipIntroDismissed = true
-                        showCenterToast("Skipped Intro (+85s)")
-                        lastInteractionTick++
-                    }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-                    .testTag("skip_intro_pill")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.FastForward,
-                    contentDescription = null,
-                    tint = PlayerSeekPeriwinkle,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "+85s Skip Intro",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        // Floating "Up Next / Next Episode" Pill during the final 30 seconds (synced with Player HUD)
-        val remainingMs = (durationMs - currentPositionMs).coerceAtLeast(0L)
-        val hasNextEpisode = effectivePlaylist.size > 1 && currentIndex < effectivePlaylist.lastIndex
-        val isNearEndOfVideo = durationMs > 0L && remainingMs in 1L..30_000L
-        val showNextEpisodePill = settings.autoPlayNextEpisode &&
-            hasNextEpisode &&
-            isControlsVisible &&
-            !isScreenLocked &&
-            !isInPipMode &&
-            !isScrubbing &&
-            activeDrawer == PlayerDrawerType.NONE &&
-            isNearEndOfVideo
-        AnimatedVisibility(
-            visible = showNextEpisodePill,
+            visible = popupVisible,
             enter = fadeIn(tween(220)) + slideInVertically { it / 2 },
             exit = fadeOut(tween(200)) + slideOutVertically { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(end = 20.dp, bottom = 116.dp)
+                .padding(end = 20.dp, bottom = if (isPortrait) 172.dp else 116.dp)
+                .zIndex(12f)
         ) {
-            val nextVideo = effectivePlaylist.getOrNull(currentIndex + 1)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color(0xFF2563EB).copy(alpha = 0.90f))
-                    .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(999.dp))
-                    .clickable {
-                        persistCurrentVideoMemory()
-                        currentIndex = (currentIndex + 1).coerceAtMost(effectivePlaylist.lastIndex)
-                        lastInteractionTick++
+            val popup = activeInteractivePopup
+            if (popup != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .shadow(10.dp, RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(50))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    Color(0xFF1E293B).copy(alpha = 0.86f),
+                                    Color(0xFF2563EB).copy(alpha = 0.78f)
+                                )
+                            )
+                        )
+                        .border(
+                            width = 1.dp,
+                            brush = Brush.linearGradient(
+                                listOf(
+                                    Color.White.copy(alpha = 0.75f),
+                                    PlayerSeekPeriwinkle.copy(alpha = 0.55f)
+                                )
+                            ),
+                            shape = RoundedCornerShape(50)
+                        )
+                        .clickable {
+                            if (popup.markerId !in dismissedMarkerIds) {
+                                dismissedMarkerIds.add(popup.markerId)
+                            }
+                            activeInteractivePopup = null
+                            when (popup) {
+                                is InteractivePlaybackPopup.SkipIntro -> {
+                                    performSeek(popup.targetSeekMs)
+                                    showCenterToast("Skipped Intro")
+                                }
+                                is InteractivePlaybackPopup.SkipOutro -> {
+                                    if (popup.hasPostCredits) {
+                                        performSeek(popup.targetSeekMs)
+                                        showCenterToast("Skipped Outro")
+                                    } else if (effectivePlaylist.size > 1 && currentIndex < effectivePlaylist.lastIndex) {
+                                        persistCurrentVideoMemory(durationMs)
+                                        showCenterToast("Skipped Outro")
+                                        currentIndex = (currentIndex + 1).coerceAtMost(effectivePlaylist.lastIndex)
+                                    } else {
+                                        performSeek(durationMs)
+                                        exoPlayer.pause()
+                                        showCenterToast("Skipped Outro")
+                                    }
+                                }
+                                is InteractivePlaybackPopup.NextVideo -> {
+                                    persistCurrentVideoMemory()
+                                    currentIndex = (currentIndex + 1).coerceAtMost(effectivePlaylist.lastIndex)
+                                }
+                            }
+                            lastInteractionTick++
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .testTag(
+                            when (popup) {
+                                is InteractivePlaybackPopup.SkipIntro -> "interactive_skip_intro_popup"
+                                is InteractivePlaybackPopup.SkipOutro -> "interactive_skip_outro_popup"
+                                is InteractivePlaybackPopup.NextVideo -> "next_episode_pill"
+                            }
+                        )
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            progress = { popupCountdownFraction.coerceIn(0f, 1f) },
+                            color = Color.White,
+                            trackColor = Color.White.copy(alpha = 0.24f),
+                            strokeWidth = 2.2.dp,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.SkipNext,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(13.dp)
+                        )
                     }
-                    .padding(horizontal = 16.dp, vertical = 9.dp)
-                    .testTag("next_episode_pill")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.SkipNext,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Next Episode: ${nextVideo?.title?.take(18) ?: "Play Next"}",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = popup.actionLabel,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        if (!popup.subtitleText.isNullOrBlank()) {
+                            Text(
+                                text = popup.subtitleText!!,
+                                color = Color.White.copy(alpha = 0.82f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 160.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -2240,8 +2674,7 @@ fun VideoPlayerScreen(
                                         .clickable {
                                             exoPlayer.pause()
                                             val prevFramePos = (exoPlayer.currentPosition - exactFrameDurationMs).coerceAtLeast(0L)
-                                            exoPlayer.seekTo(prevFramePos)
-                                            currentPositionMs = prevFramePos
+                                            performSeek(prevFramePos)
                                             showCenterToast("Frame -${exactFrameDurationMs}ms")
                                             lastInteractionTick++
                                         }
@@ -2267,8 +2700,7 @@ fun VideoPlayerScreen(
                                         .clickable {
                                             exoPlayer.pause()
                                             val nextFramePos = (exoPlayer.currentPosition + exactFrameDurationMs).coerceAtMost(durationMs)
-                                            exoPlayer.seekTo(nextFramePos)
-                                            currentPositionMs = nextFramePos
+                                            performSeek(nextFramePos)
                                             showCenterToast("Frame +${exactFrameDurationMs}ms")
                                             lastInteractionTick++
                                         }
@@ -2465,7 +2897,7 @@ fun VideoPlayerScreen(
                         .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    val displayedPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
+                    val displayedPosMs = if (isScrubbing) scrubPositionMs else (pendingSeekPositionMs ?: currentPositionMs)
                     // Seek Row: Left Timestamp + Sky-Blue (#58A6FF) Slider with Thumb-Anchored Tooltip + Right Total Duration
                     SeekBarWithFloatingTooltip(
                         displayedPosMs = displayedPosMs,
@@ -2482,10 +2914,8 @@ fun VideoPlayerScreen(
                             lastInteractionTick++
                         },
                         onSeekCommit = { targetMs ->
-                            isScrubbing = true
                             scrubPositionMs = targetMs
-                            currentPositionMs = targetMs
-                            exoPlayer.seekTo(targetMs)
+                            performSeek(targetMs)
                             centerBanner = null
                             lastInteractionTick++
                             isScrubbing = false
@@ -2497,166 +2927,388 @@ fun VideoPlayerScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Bottom Control Row: Far-Left Padlock | Center Previous, Play/Pause, Next | Far-Right PiP & Aspect Ratio
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        // Far Left: Screen Lock (Padlock)
-                        IconButton(
-                            onClick = {
-                                isScreenLocked = true
-                                isControlsVisible = true
-                                lastInteractionTick++
-                            },
+                    val onLockClick: () -> Unit = {
+                        isScreenLocked = true
+                        isControlsVisible = true
+                        lastInteractionTick++
+                    }
+                    val onPreviousClick: () -> Unit = {
+                        if (currentIndex > 0) {
+                            persistCurrentVideoMemory()
+                            currentIndex--
+                        } else {
+                            performSeek(0L)
+                        }
+                        lastInteractionTick++
+                    }
+                    val onRewind10sClick: () -> Unit = {
+                        val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                        performSeek(target)
+                        lastInteractionTick++
+                    }
+                    val onPlayPauseClick: () -> Unit = {
+                        if (exoPlayer.isPlaying) {
+                            exoPlayer.pause()
+                        } else {
+                            if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                                exoPlayer.seekTo(0L)
+                            }
+                            exoPlayer.play()
+                        }
+                        lastInteractionTick++
+                    }
+                    val onForward10sClick: () -> Unit = {
+                        val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(durationMs)
+                        performSeek(target)
+                        lastInteractionTick++
+                    }
+                    val onNextClick: () -> Unit = {
+                        if (currentIndex < effectivePlaylist.lastIndex) {
+                            persistCurrentVideoMemory()
+                            currentIndex++
+                        } else {
+                            val target = (exoPlayer.currentPosition + settings.doubleTapSeekSeconds * 1000L)
+                                .coerceAtMost(durationMs)
+                            performSeek(target)
+                        }
+                        lastInteractionTick++
+                    }
+                    val onPipClick: () -> Unit = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+                            try {
+                                val pipParams = buildPlayerPictureInPictureParams(
+                                    context = context,
+                                    width = activeVideoWidth,
+                                    height = activeVideoHeight,
+                                    rotationDegrees = activeVideoRotation,
+                                    isPlaying = isPlaying,
+                                    autoEnterEnabled = isPlaying && !isScreenLocked && settings.backgroundAudioOrPipOnHome
+                                )
+                                activity.enterPictureInPictureMode(pipParams)
+                            } catch (_: Exception) {
+                                showCenterToast("PiP Mode Requested")
+                            }
+                        } else {
+                            showCenterToast("PiP requires Android 8.0+")
+                        }
+                        lastInteractionTick++
+                    }
+                    val onScaleModeClick: () -> Unit = {
+                        val modes = PlayerScaleMode.entries
+                        val nextMode = modes[(modes.indexOf(scaleMode) + 1) % modes.size]
+                        scaleMode = nextMode
+                        zoomScale = 1.0f
+                        persistCurrentVideoMemory()
+                        showCenterToast(nextMode.label)
+                        lastInteractionTick++
+                    }
+                    val onRotateClick: () -> Unit = {
+                        manualOrientationOverridden = true
+                        isLandscape = !isLandscape
+                        activity?.requestedOrientation = if (isLandscape) {
+                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        } else {
+                            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        }
+                        lastInteractionTick++
+                    }
+
+                    if (isPortrait) {
+                        // Portrait: Two clean, well-spaced rows to prevent PiP & transport button crowding
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // Row 1 — Primary Transport Row (Centered): Previous • Rewind -10s • Play/Pause • Forward +10s • Next
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("portrait_primary_transport_row")
+                            ) {
+                                IconButton(
+                                    onClick = onPreviousClick,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("player_previous_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipPrevious,
+                                        contentDescription = "Previous Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onRewind10sClick,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("player_rewind_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Replay10,
+                                        contentDescription = "Rewind 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(CircleShape)
+                                        .background(PlayerHudGlassBg)
+                                        .border(1.dp, PlayerHudGlassBorder, CircleShape)
+                                        .clickable(onClick = onPlayPauseClick)
+                                        .testTag("play_pause_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = if (isPlaying) "Pause" else "Play",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(34.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onForward10sClick,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("player_forward_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Forward10,
+                                        contentDescription = "Forward 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onNextClick,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("player_next_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipNext,
+                                        contentDescription = "Next Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+                            }
+
+                            // Row 2 — Secondary Utility Row: Left Lock | Right PiP + Aspect Ratio + Rotate Orientation
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                                    .testTag("portrait_secondary_utility_row")
+                            ) {
+                                IconButton(
+                                    onClick = onLockClick,
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .size(48.dp)
+                                        .testTag("lock_screen_controls_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LockOpen,
+                                        contentDescription = "Lock Screen Controls",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.align(Alignment.CenterEnd)
+                                ) {
+                                    IconButton(
+                                        onClick = onPipClick,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .testTag("pip_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PictureInPictureAlt,
+                                            contentDescription = "Picture-in-Picture",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(23.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = onScaleModeClick,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .testTag("aspect_ratio_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.AspectRatio,
+                                            contentDescription = "Aspect Ratio / Resize Mode",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = onRotateClick,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .testTag("bottom_screen_rotation_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.ScreenRotation,
+                                            contentDescription = "Rotate Orientation",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(23.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Landscape: Unified wide single-row transport layout with >= 14.dp spacing
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .size(48.dp)
-                                .testTag("lock_screen_controls_button")
+                                .fillMaxWidth()
+                                .testTag("landscape_transport_row")
                         ) {
-                            Icon(
-                                imageVector = Icons.Filled.LockOpen,
-                                contentDescription = "Lock Screen Controls",
-                                tint = Color.White,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        // Center: Previous (|<), Large Play/Pause, Next (>|)
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(26.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.align(Alignment.Center)
-                        ) {
+                            // Far Left: Screen Lock (Padlock)
                             IconButton(
-                                onClick = {
-                                    if (currentIndex > 0) {
-                                        persistCurrentVideoMemory()
-                                        currentIndex--
-                                    } else {
-                                        exoPlayer.seekTo(0L)
-                                        currentPositionMs = 0L
-                                    }
-                                    lastInteractionTick++
-                                },
+                                onClick = onLockClick,
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .testTag("player_previous_button")
+                                    .testTag("lock_screen_controls_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.SkipPrevious,
-                                    contentDescription = "Previous Video",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(34.dp)
-                                )
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    if (exoPlayer.isPlaying) {
-                                        exoPlayer.pause()
-                                    } else {
-                                        if (exoPlayer.playbackState == Player.STATE_ENDED) {
-                                            exoPlayer.seekTo(0L)
-                                        }
-                                        exoPlayer.play()
-                                    }
-                                    lastInteractionTick++
-                                },
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .testTag("play_pause_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                    contentDescription = if (isPlaying) "Pause" else "Play",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(44.dp)
-                                )
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    if (currentIndex < effectivePlaylist.lastIndex) {
-                                        persistCurrentVideoMemory()
-                                        currentIndex++
-                                    } else {
-                                        val target = (exoPlayer.currentPosition + settings.doubleTapSeekSeconds * 1000L)
-                                            .coerceAtMost(durationMs)
-                                        exoPlayer.seekTo(target)
-                                        currentPositionMs = target
-                                    }
-                                    lastInteractionTick++
-                                },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("player_next_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.SkipNext,
-                                    contentDescription = "Next Video",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(34.dp)
-                                )
-                            }
-                        }
-
-                        // Far Right: Picture-in-Picture (PiP) + Aspect Ratio / Resize Mode
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
-                                        try {
-                                            val pipParams = buildPlayerPictureInPictureParams(
-                                                context = context,
-                                                width = activeVideoWidth,
-                                                height = activeVideoHeight,
-                                                rotationDegrees = activeVideoRotation,
-                                                isPlaying = isPlaying,
-                                                autoEnterEnabled = isPlaying && !isScreenLocked && settings.backgroundAudioOrPipOnHome
-                                            )
-                                            activity.enterPictureInPictureMode(pipParams)
-                                        } catch (_: Exception) {
-                                            showCenterToast("PiP Mode Requested")
-                                        }
-                                    } else {
-                                        showCenterToast("PiP requires Android 8.0+")
-                                    }
-                                    lastInteractionTick++
-                                },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("pip_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.PictureInPictureAlt,
-                                    contentDescription = "Picture-in-Picture",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(23.dp)
-                                )
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    val modes = PlayerScaleMode.entries
-                                    val nextMode = modes[(modes.indexOf(scaleMode) + 1) % modes.size]
-                                    scaleMode = nextMode
-                                    zoomScale = 1.0f
-                                    persistCurrentVideoMemory()
-                                    showCenterToast(nextMode.label)
-                                    lastInteractionTick++
-                                },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("aspect_ratio_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.AspectRatio,
-                                    contentDescription = "Aspect Ratio / Resize Mode",
+                                    imageVector = Icons.Filled.LockOpen,
+                                    contentDescription = "Lock Screen Controls",
                                     tint = Color.White,
                                     modifier = Modifier.size(24.dp)
                                 )
+                            }
+
+                            // Center: Previous, Rewind -10s, Play/Pause, Forward +10s, Next
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = onPreviousClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("player_previous_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipPrevious,
+                                        contentDescription = "Previous Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(34.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onRewind10sClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("player_rewind_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Replay10,
+                                        contentDescription = "Rewind 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(CircleShape)
+                                        .background(PlayerHudGlassBg)
+                                        .border(1.dp, PlayerHudGlassBorder, CircleShape)
+                                        .clickable(onClick = onPlayPauseClick)
+                                        .testTag("play_pause_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        contentDescription = if (isPlaying) "Pause" else "Play",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onForward10sClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("player_forward_10s_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Forward10,
+                                        contentDescription = "Forward 10 seconds",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onNextClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("player_next_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipNext,
+                                        contentDescription = "Next Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(34.dp)
+                                    )
+                                }
+                            }
+
+                            // Far Right: Picture-in-Picture (PiP) + Aspect Ratio / Resize Mode
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = onPipClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("pip_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.PictureInPictureAlt,
+                                        contentDescription = "Picture-in-Picture",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(23.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onScaleModeClick,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("aspect_ratio_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.AspectRatio,
+                                        contentDescription = "Aspect Ratio / Resize Mode",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -2677,7 +3329,7 @@ fun VideoPlayerScreen(
                 .align(Alignment.BottomCenter)
                 .zIndex(20f)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(bottom = 128.dp)
+                .padding(bottom = if (isPortrait) 184.dp else 128.dp)
         ) {
             FloatingPlaybackSpeedBar(
                 speed = playbackSpeed,
@@ -2711,7 +3363,7 @@ fun VideoPlayerScreen(
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            val hiddenBarPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
+            val hiddenBarPosMs = if (isScrubbing) scrubPositionMs else (pendingSeekPositionMs ?: currentPositionMs)
             SeekBarWithFloatingTooltip(
                 displayedPosMs = hiddenBarPosMs,
                 durationMs = durationMs,
@@ -2726,8 +3378,8 @@ fun VideoPlayerScreen(
                     centerBanner = null
                 },
                 onSeekCommit = { targetMs ->
-                    currentPositionMs = targetMs
-                    exoPlayer.seekTo(targetMs)
+                    scrubPositionMs = targetMs
+                    performSeek(targetMs)
                     isScrubbing = false
                 },
                 seekBarTestTag = "hidden_controls_wavy_seekbar",
@@ -2780,8 +3432,7 @@ fun VideoPlayerScreen(
                             .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(999.dp))
                             .clickable {
                                 pendingResumePromptMs = null
-                                exoPlayer.seekTo(0L)
-                                currentPositionMs = 0L
+                                performSeek(0L)
                                 exoPlayer.playWhenReady = true
                             }
                             .padding(horizontal = 18.dp, vertical = 10.dp)
@@ -2800,8 +3451,7 @@ fun VideoPlayerScreen(
                             .background(PlayerSeekPeriwinkle)
                             .clickable {
                                 pendingResumePromptMs = null
-                                exoPlayer.seekTo(targetMs)
-                                currentPositionMs = targetMs
+                                performSeek(targetMs)
                                 exoPlayer.playWhenReady = true
                             }
                             .padding(horizontal = 20.dp, vertical = 10.dp)
@@ -3505,10 +4155,25 @@ private fun FrostedCircleHudButton(
     iconModifier: Modifier = Modifier,
     isActiveHighlight: Boolean = false
 ) {
-    val bg = if (isActiveHighlight) {
-        PlayerSeekPeriwinkle.copy(alpha = 0.5f)
+    val glassConfig = LocalLiquidGlassConfig.current
+    val useGlassStyle = glassConfig.enabled && glassConfig.hdrModeEnabled
+    val bgAlpha = if (useGlassStyle) {
+        (0.45f * glassConfig.backdropOpacity.coerceIn(0.35f, 1f)).coerceIn(0.20f, 0.72f)
     } else {
-        PlayerHudGlassBg
+        0.55f
+    }
+    val bg = if (isActiveHighlight) {
+        PlayerSeekPeriwinkle.copy(alpha = 0.55f)
+    } else if (useGlassStyle) {
+        PlayerHudGlassBg.copy(alpha = bgAlpha)
+    } else {
+        Color.Black.copy(alpha = 0.58f)
+    }
+    val borderWidth = if (useGlassStyle) glassConfig.effectiveHighlightStrokeDp() else 1.dp
+    val borderColor = if (useGlassStyle) {
+        PlayerHudGlassBorder.copy(alpha = (0.28f * glassConfig.highlightStrength).coerceIn(0.08f, 0.75f))
+    } else {
+        Color.White.copy(alpha = 0.16f)
     }
 
     Box(
@@ -3516,7 +4181,7 @@ private fun FrostedCircleHudButton(
             .size(size)
             .clip(CircleShape)
             .background(bg)
-            .border(1.dp, PlayerHudGlassBorder, CircleShape)
+            .border(borderWidth, borderColor, CircleShape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -3696,6 +4361,8 @@ private fun WavyVideoSeekBar(
 ) {
     val safeDuration = durationMs.coerceAtLeast(1000L)
     val fraction = (currentMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+    val latestDurationMs by rememberUpdatedState(safeDuration)
+    val latestCurrentMs by rememberUpdatedState(currentMs)
     val latestSeekUpdate by rememberUpdatedState(onSeekStartOrUpdate)
     val latestSeekCommit by rememberUpdatedState(onSeekCommit)
     val textMeasurer = rememberTextMeasurer()
@@ -3735,28 +4402,37 @@ private fun WavyVideoSeekBar(
         contentAlignment = Alignment.CenterStart,
         modifier = modifier
             .height(48.dp)
-            .pointerInput(safeDuration) {
+            .pointerInput(Unit) {
                 detectTapGestures { offset ->
-                    val barWidth = size.width.toFloat().coerceAtLeast(1f)
-                    val tapFraction = (offset.x / barWidth).coerceIn(0f, 1f)
-                    val targetMs = (tapFraction * safeDuration).toLong()
+                    val strokePx = 4.dp.toPx()
+                    val trackStart = strokePx / 2f
+                    val trackEnd = (size.width - strokePx / 2f).coerceAtLeast(trackStart + 1f)
+                    val usableWidth = (trackEnd - trackStart).coerceAtLeast(1f)
+                    val tapFraction = ((offset.x - trackStart) / usableWidth).coerceIn(0f, 1f)
+                    val targetMs = (tapFraction * latestDurationMs).toLong()
                     latestSeekCommit(targetMs)
                 }
             }
-            .pointerInput(safeDuration) {
-                var activeDragTargetMs = currentMs.coerceIn(0L, safeDuration)
+            .pointerInput(Unit) {
+                var activeDragTargetMs = latestCurrentMs.coerceIn(0L, latestDurationMs)
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
-                        val barWidth = size.width.toFloat().coerceAtLeast(1f)
-                        val dragFraction = (offset.x / barWidth).coerceIn(0f, 1f)
-                        activeDragTargetMs = (dragFraction * safeDuration).toLong()
+                        val strokePx = 4.dp.toPx()
+                        val trackStart = strokePx / 2f
+                        val trackEnd = (size.width - strokePx / 2f).coerceAtLeast(trackStart + 1f)
+                        val usableWidth = (trackEnd - trackStart).coerceAtLeast(1f)
+                        val dragFraction = ((offset.x - trackStart) / usableWidth).coerceIn(0f, 1f)
+                        activeDragTargetMs = (dragFraction * latestDurationMs).toLong()
                         latestSeekUpdate(activeDragTargetMs)
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
-                        val barWidth = size.width.toFloat().coerceAtLeast(1f)
-                        val dragFraction = (change.position.x / barWidth).coerceIn(0f, 1f)
-                        activeDragTargetMs = (dragFraction * safeDuration).toLong()
+                        val strokePx = 4.dp.toPx()
+                        val trackStart = strokePx / 2f
+                        val trackEnd = (size.width - strokePx / 2f).coerceAtLeast(trackStart + 1f)
+                        val usableWidth = (trackEnd - trackStart).coerceAtLeast(1f)
+                        val dragFraction = ((change.position.x - trackStart) / usableWidth).coerceIn(0f, 1f)
+                        activeDragTargetMs = (dragFraction * latestDurationMs).toLong()
                         latestSeekUpdate(activeDragTargetMs)
                     },
                     onDragEnd = {
@@ -3782,8 +4458,8 @@ private fun WavyVideoSeekBar(
             val usableWidth = (trackEnd - trackStart).coerceAtLeast(1f)
             val thumbCenterX = (trackStart + usableWidth * fraction).coerceIn(trackStart, trackEnd)
 
-            // 1. Subtle translucent chapter / bookmark highlight blocks
-            if (chapters.isNotEmpty()) {
+            // 1. Subtle translucent chapter / bookmark highlight blocks (only when 2+ real chapters exist)
+            if (chapters.size >= 2) {
                 val sortedChapters = chapters.sortedBy { it.startTimeMs }
                 sortedChapters.forEachIndexed { idx, chapter ->
                     val startFrac = (chapter.startTimeMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
@@ -3930,19 +4606,21 @@ private fun WavyVideoSeekBar(
             if (aX != null) drawLoopPin(aX, cyanPinColor, "A")
             if (bX != null) drawLoopPin(bX, coralPinColor, "B")
 
-            // 4. Chapter tick dividers
-            chapters.forEach { chapter ->
-                if (chapter.startTimeMs in 1L until safeDuration) {
-                    val tickFrac = (chapter.startTimeMs.toFloat() / safeDuration.toFloat()).coerceIn(0.02f, 0.98f)
-                    val tickX = trackStart + usableWidth * tickFrac
-                    if (abs(tickX - thumbCenterX) > thumbGapPx + 2.dp.toPx()) {
-                        drawLine(
-                            color = Color.White.copy(alpha = 0.80f),
-                            start = Offset(tickX, centerY - 4.5.dp.toPx()),
-                            end = Offset(tickX, centerY + 4.5.dp.toPx()),
-                            strokeWidth = 1.6.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
+            // 4. Chapter tick dividers (only at exact chapter starts when 2+ real chapters exist)
+            if (chapters.size >= 2) {
+                chapters.forEach { chapter ->
+                    if (chapter.startTimeMs in 1L until safeDuration) {
+                        val tickFrac = (chapter.startTimeMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+                        val tickX = trackStart + usableWidth * tickFrac
+                        if (abs(tickX - thumbCenterX) > thumbGapPx + 2.dp.toPx()) {
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.80f),
+                                start = Offset(tickX, centerY - 4.5.dp.toPx()),
+                                end = Offset(tickX, centerY + 4.5.dp.toPx()),
+                                strokeWidth = 1.6.dp.toPx(),
+                                cap = StrokeCap.Round
+                            )
+                        }
                     }
                 }
             }
@@ -3966,37 +4644,518 @@ private fun WavyVideoSeekBar(
     }
 }
 
-private fun buildVideoChapters(
+internal fun buildVideoChapters(
     mediaMetadata: MediaMetadata,
-    video: VideoItem,
-    durationMs: Long
+    durationMs: Long,
+    metadataChapters: List<VideoChapter> = emptyList()
 ): List<VideoChapter> {
     val safeDur = durationMs.coerceAtLeast(1000L)
+    val parsed = mutableListOf<VideoChapter>()
+
     val extras = mediaMetadata.extras
-    val parsedFromExtras = mutableListOf<VideoChapter>()
     if (extras != null) {
         val titles = extras.getStringArray("chapter_titles")
         val starts = extras.getLongArray("chapter_starts_ms")
         if (titles != null && starts != null && titles.size == starts.size) {
             for (i in titles.indices) {
-                parsedFromExtras.add(VideoChapter(titles[i], starts[i]))
+                val title = titles[i].trim()
+                val start = starts[i]
+                if (title.isNotEmpty() && start in 0L until safeDur) {
+                    parsed.add(VideoChapter(title, start))
+                }
             }
         }
     }
-    if (parsedFromExtras.isNotEmpty()) {
-        return parsedFromExtras.sortedBy { it.startTimeMs }
+
+    metadataChapters.forEach { chapter ->
+        if (chapter.title.isNotBlank() && chapter.startTimeMs in 0L until safeDur) {
+            parsed.add(chapter)
+        }
     }
 
-    // Standard container chapter structure so chapter ticks & scrubbing tooltips are always active
-    return listOf(
-        VideoChapter("Chapter 1 • Opening", 0L),
-        VideoChapter("Chapter 2 • Main Sequence", (safeDur * 0.25f).toLong()),
-        VideoChapter("Chapter 3 • Climax (${video.resolutionTag})", (safeDur * 0.55f).toLong()),
-        VideoChapter("Chapter 4 • Finale & Credits", (safeDur * 0.82f).toLong())
-    )
+    return parsed
+        .distinctBy { it.startTimeMs }
+        .sortedBy { it.startTimeMs }
 }
 
-private fun findChapterForPosition(chapters: List<VideoChapter>, positionMs: Long): VideoChapter? {
+internal fun resolveChapterMarkers(
+    chapters: List<VideoChapter>,
+    totalDurationMs: Long
+): List<ChapterMarker> {
+    if (chapters.isEmpty()) return emptyList()
+    val safeTotal = totalDurationMs.coerceAtLeast(0L)
+    val sorted = chapters
+        .filter { it.title.isNotBlank() && it.startTimeMs >= 0L }
+        .distinctBy { it.startTimeMs }
+        .sortedBy { it.startTimeMs }
+    if (sorted.isEmpty()) return emptyList()
+
+    return sorted.mapIndexed { index, chapter ->
+        val rawEnd = if (index < sorted.lastIndex) {
+            sorted[index + 1].startTimeMs
+        } else {
+            safeTotal
+        }
+        ChapterMarker(
+            title = chapter.title.trim(),
+            startMs = chapter.startTimeMs,
+            endMs = rawEnd.coerceAtLeast(chapter.startTimeMs)
+        )
+    }
+}
+
+private val INTRO_EXACT_TITLES = setOf(
+    "intro",
+    "opening",
+    "op",
+    "opening credits",
+    "main title",
+    "title sequence",
+    "theme song"
+)
+private val INTRO_WORD_REGEX = Regex("\\b(op|opening|intro)(\\s*\\d+)?\\b")
+private val INTRO_EXPLICIT_TAG_REGEX = Regex("\\bintro(\\s*\\d+)?\\b")
+
+internal fun isIntroChapterTitle(title: String): Boolean {
+    val normalized = title.trim()
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[_\\-]+"), " ")
+        .replace(Regex("\\s+"), " ")
+    if (normalized.isEmpty()) return false
+
+    val hasColdOpenOrRecap = normalized.contains("cold open") || normalized.contains("recap")
+    if (hasColdOpenOrRecap && !INTRO_EXPLICIT_TAG_REGEX.containsMatchIn(normalized)) {
+        return false
+    }
+
+    if (normalized in INTRO_EXACT_TITLES) return true
+    if (normalized.contains("opening credits") ||
+        normalized.contains("main title") ||
+        normalized.contains("title sequence") ||
+        normalized.contains("theme song")
+    ) {
+        return true
+    }
+    return INTRO_WORD_REGEX.containsMatchIn(normalized)
+}
+
+private val OUTRO_EXACT_TITLES = setOf(
+    "outro",
+    "ending",
+    "ed",
+    "end credits",
+    "closing",
+    "closing credits",
+    "credits"
+)
+private val OUTRO_WORD_REGEX = Regex("\\b(ed|ending|outro|credits)(\\s*\\d+)?\\b")
+
+internal fun isOutroChapterTitle(title: String): Boolean {
+    val normalized = title.trim()
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[_\\-]+"), " ")
+        .replace(Regex("\\s+"), " ")
+    if (normalized.isEmpty()) return false
+    if (isIntroChapterTitle(title)) return false
+    if (normalized.contains("post credit") || normalized.contains("after credit")) return false
+
+    if (normalized in OUTRO_EXACT_TITLES) return true
+    if (normalized.contains("end credits") || normalized.contains("closing credits")) return true
+    return OUTRO_WORD_REGEX.containsMatchIn(normalized)
+}
+
+private fun resolveInitialDisplayBrightness(context: Context): Float {
+    val sysVal = runCatching {
+        Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 140)
+    }.getOrDefault(140)
+    return (sysVal / 255f).coerceIn(0.05f, 1.0f)
+}
+
+internal suspend fun extractContainerChapters(
+    context: Context,
+    uri: Uri,
+    directFilePath: String? = null
+): List<VideoChapter> = withContext(Dispatchers.IO) {
+    runCatching {
+        val directFile = directFilePath?.let { File(it) }?.takeIf { it.isFile && it.canRead() }
+            ?: uri.takeIf { it.scheme == "file" }?.path?.let { File(it) }?.takeIf { it.isFile && it.canRead() }
+        if (directFile != null) {
+            FileInputStream(directFile).use { fis ->
+                return@runCatching parseChaptersFromFileChannel(fis.channel)
+            }
+        }
+        val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return@runCatching emptyList()
+        pfd.use { descriptor ->
+            ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { fis ->
+                return@runCatching parseChaptersFromFileChannel(fis.channel)
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+internal fun parseChaptersFromFileChannel(channel: FileChannel): List<VideoChapter> {
+    val fileSize = runCatching { channel.size() }.getOrDefault(0L)
+    if (fileSize < 16L) return emptyList()
+    channel.position(0L)
+    val magic = ByteArray(8)
+    val read = readFullyFromChannel(channel, magic, 0, 8)
+    if (read < 8) return emptyList()
+    channel.position(0L)
+
+    return if (magic[0] == 0x1A.toByte() &&
+        magic[1] == 0x45.toByte() &&
+        magic[2] == 0xDF.toByte() &&
+        magic[3] == 0xA3.toByte()
+    ) {
+        parseMatroskaChaptersFromChannel(channel, fileSize)
+    } else {
+        parseMp4ChaptersFromChannel(channel, fileSize)
+    }
+}
+
+private fun parseMatroskaChaptersFromChannel(channel: FileChannel, fileSize: Long): List<VideoChapter> {
+    // Read EBML header element
+    val headerId = readEbmlId(channel, fileSize) ?: return emptyList()
+    if (headerId != 0x1A45DFA3L) return emptyList()
+    val headerSize = readEbmlSize(channel, fileSize) ?: return emptyList()
+    if (headerSize < 0L || channel.position() + headerSize >= fileSize) return emptyList()
+    channel.position(channel.position() + headerSize)
+
+    // Expect Segment (0x18538067)
+    val segId = readEbmlId(channel, fileSize) ?: return emptyList()
+    if (segId != 0x18538067L) return emptyList()
+    val segSize = readEbmlSize(channel, fileSize)
+    val segDataStart = channel.position()
+    val segEnd = if (segSize != null && segSize > 0L) minOf(fileSize, segDataStart + segSize) else fileSize
+
+    var chaptersOffset: Long? = null
+    var iterations = 0
+    while (channel.position() < segEnd && iterations++ < 64) {
+        val elemStart = channel.position()
+        val elemId = readEbmlId(channel, segEnd) ?: break
+        val elemSize = readEbmlSize(channel, segEnd) ?: break
+        val dataStart = channel.position()
+        if (elemSize < 0L) break
+
+        when (elemId) {
+            0x1043A770L -> { // Chapters
+                val endPos = minOf(segEnd, dataStart + elemSize)
+                return parseEbmlChaptersPayload(channel, dataStart, endPos)
+            }
+            0x114D9B74L -> { // SeekHead
+                val endPos = minOf(segEnd, dataStart + elemSize)
+                val foundSeek = findChaptersSeekOffsetInSeekHead(channel, dataStart, endPos, segDataStart)
+                if (foundSeek != null) {
+                    chaptersOffset = foundSeek
+                }
+                channel.position(endPos)
+            }
+            0x1F43B675L -> { // Cluster: jump to SeekHead target if known, otherwise stop scanning
+                val jumpPos = chaptersOffset
+                if (jumpPos != null && jumpPos > elemStart && jumpPos < segEnd) {
+                    channel.position(jumpPos)
+                    chaptersOffset = null
+                } else {
+                    break
+                }
+            }
+            else -> {
+                val nextPos = dataStart + elemSize
+                if (nextPos <= elemStart || nextPos > segEnd) break
+                channel.position(nextPos)
+            }
+        }
+    }
+
+    val targetOffset = chaptersOffset
+    if (targetOffset != null && targetOffset in segDataStart until segEnd) {
+        channel.position(targetOffset)
+        val elemId = readEbmlId(channel, segEnd)
+        val elemSize = readEbmlSize(channel, segEnd)
+        if (elemId == 0x1043A770L && elemSize != null && elemSize > 0L) {
+            val dataStart = channel.position()
+            return parseEbmlChaptersPayload(channel, dataStart, minOf(segEnd, dataStart + elemSize))
+        }
+    }
+    return emptyList()
+}
+
+private fun findChaptersSeekOffsetInSeekHead(
+    channel: FileChannel,
+    startPos: Long,
+    endPos: Long,
+    segmentDataStart: Long
+): Long? {
+    channel.position(startPos)
+    while (channel.position() < endPos) {
+        val id = readEbmlId(channel, endPos) ?: break
+        val size = readEbmlSize(channel, endPos) ?: break
+        val childStart = channel.position()
+        val childEnd = minOf(endPos, childStart + size.coerceAtLeast(0L))
+        if (id == 0x4DBBL) { // Seek
+            var seekIdValue = -1L
+            var seekPosValue = -1L
+            while (channel.position() < childEnd) {
+                val sid = readEbmlId(channel, childEnd) ?: break
+                val ssize = readEbmlSize(channel, childEnd) ?: break
+                val sStart = channel.position()
+                val sEnd = minOf(childEnd, sStart + ssize.coerceAtLeast(0L))
+                when (sid) {
+                    0x53ABL -> seekIdValue = readEbmlUInt(channel, ssize.toInt().coerceIn(0, 8))
+                    0x53ACL -> seekPosValue = readEbmlUInt(channel, ssize.toInt().coerceIn(0, 8))
+                }
+                channel.position(sEnd)
+            }
+            if (seekIdValue == 0x1043A770L && seekPosValue >= 0L) {
+                return segmentDataStart + seekPosValue
+            }
+        }
+        channel.position(childEnd)
+    }
+    return null
+}
+
+private fun parseEbmlChaptersPayload(
+    channel: FileChannel,
+    startPos: Long,
+    endPos: Long
+): List<VideoChapter> {
+    val result = mutableListOf<VideoChapter>()
+    channel.position(startPos)
+    while (channel.position() < endPos) {
+        val id = readEbmlId(channel, endPos) ?: break
+        val size = readEbmlSize(channel, endPos) ?: break
+        val childStart = channel.position()
+        val childEnd = minOf(endPos, childStart + size.coerceAtLeast(0L))
+        if (id == 0x45B9L) { // EditionEntry
+            parseEbmlEditionEntry(channel, childStart, childEnd, result)
+            if (result.isNotEmpty()) break
+        }
+        channel.position(childEnd)
+    }
+    return result.distinctBy { it.startTimeMs }.sortedBy { it.startTimeMs }
+}
+
+private fun parseEbmlEditionEntry(
+    channel: FileChannel,
+    startPos: Long,
+    endPos: Long,
+    out: MutableList<VideoChapter>
+) {
+    channel.position(startPos)
+    while (channel.position() < endPos) {
+        val id = readEbmlId(channel, endPos) ?: break
+        val size = readEbmlSize(channel, endPos) ?: break
+        val childStart = channel.position()
+        val childEnd = minOf(endPos, childStart + size.coerceAtLeast(0L))
+        if (id == 0xB6L) { // ChapterAtom
+            parseEbmlChapterAtom(channel, childStart, childEnd, out)
+        }
+        channel.position(childEnd)
+    }
+}
+
+private fun parseEbmlChapterAtom(
+    channel: FileChannel,
+    startPos: Long,
+    endPos: Long,
+    out: MutableList<VideoChapter>
+) {
+    channel.position(startPos)
+    var timeStartNs = -1L
+    var chapterTitle = ""
+    while (channel.position() < endPos) {
+        val id = readEbmlId(channel, endPos) ?: break
+        val size = readEbmlSize(channel, endPos) ?: break
+        val childStart = channel.position()
+        val childEnd = minOf(endPos, childStart + size.coerceAtLeast(0L))
+        when (id) {
+            0x91L -> { // ChapterTimeStart (nanoseconds)
+                timeStartNs = readEbmlUInt(channel, size.toInt().coerceIn(0, 8))
+            }
+            0x80L -> { // ChapterDisplay
+                if (chapterTitle.isEmpty()) {
+                    chapterTitle = parseEbmlChapterDisplayTitle(channel, childStart, childEnd)
+                }
+            }
+            0xB6L -> { // Nested ChapterAtom
+                parseEbmlChapterAtom(channel, childStart, childEnd, out)
+            }
+        }
+        channel.position(childEnd)
+    }
+    if (timeStartNs >= 0L) {
+        val title = chapterTitle.ifBlank { "Chapter ${out.size + 1}" }
+        out.add(VideoChapter(title = title, startTimeMs = timeStartNs / 1_000_000L))
+    }
+}
+
+private fun parseEbmlChapterDisplayTitle(channel: FileChannel, startPos: Long, endPos: Long): String {
+    channel.position(startPos)
+    while (channel.position() < endPos) {
+        val id = readEbmlId(channel, endPos) ?: break
+        val size = readEbmlSize(channel, endPos) ?: break
+        val childStart = channel.position()
+        val childEnd = minOf(endPos, childStart + size.coerceAtLeast(0L))
+        if (id == 0x85L && size in 1L..4096L) { // ChapString (UTF-8)
+            val bytes = ByteArray(size.toInt())
+            val read = readFullyFromChannel(channel, bytes, 0, bytes.size)
+            if (read > 0) {
+                return String(bytes, 0, read, Charsets.UTF_8).trim()
+            }
+        }
+        channel.position(childEnd)
+    }
+    return ""
+}
+
+private fun readEbmlId(channel: FileChannel, limit: Long): Long? {
+    if (channel.position() >= limit) return null
+    val first = readSingleByte(channel) ?: return null
+    var mask = 0x80
+    var length = 1
+    while (length <= 4 && (first and mask) == 0) {
+        mask = mask shr 1
+        length++
+    }
+    if (length > 4 || channel.position() + (length - 1) > limit) return null
+    var value = first.toLong()
+    for (i in 1 until length) {
+        val b = readSingleByte(channel) ?: return null
+        value = (value shl 8) or b.toLong()
+    }
+    return value
+}
+
+private fun readEbmlSize(channel: FileChannel, limit: Long): Long? {
+    if (channel.position() >= limit) return null
+    val first = readSingleByte(channel) ?: return null
+    var mask = 0x80
+    var length = 1
+    while (length <= 8 && (first and mask) == 0) {
+        mask = mask shr 1
+        length++
+    }
+    if (length > 8 || channel.position() + (length - 1) > limit) return null
+    var value = (first and (mask - 1)).toLong()
+    for (i in 1 until length) {
+        val b = readSingleByte(channel) ?: return null
+        value = (value shl 8) or b.toLong()
+    }
+    return value
+}
+
+private fun readEbmlUInt(channel: FileChannel, byteLen: Int): Long {
+    var result = 0L
+    for (i in 0 until byteLen) {
+        val b = readSingleByte(channel) ?: return -1L
+        result = (result shl 8) or b.toLong()
+    }
+    return result
+}
+
+private fun parseMp4ChaptersFromChannel(channel: FileChannel, fileSize: Long): List<VideoChapter> {
+    val moovRange = findMp4BoxRange(channel, 0L, fileSize, 0x6D6F6F76) ?: return emptyList() // moov
+    val udtaRange = findMp4BoxRange(channel, moovRange.first, moovRange.second, 0x75647461) ?: return emptyList() // udta
+    val chplRange = findMp4BoxRange(channel, udtaRange.first, udtaRange.second, 0x6368706C) ?: return emptyList() // chpl
+
+    val payloadLen = (chplRange.second - chplRange.first).toInt().coerceAtLeast(0)
+    if (payloadLen < 6 || payloadLen > 1024 * 1024) return emptyList()
+    channel.position(chplRange.first)
+    val bytes = ByteArray(payloadLen)
+    val read = readFullyFromChannel(channel, bytes, 0, payloadLen)
+    if (read < 6) return emptyList()
+
+    val buf = ByteBuffer.wrap(bytes, 0, read).order(ByteOrder.BIG_ENDIAN)
+    val version = buf.get().toInt() and 0xFF
+    buf.position(4) // skip flags (3 bytes)
+    if (version == 1) {
+        if (buf.remaining() < 5) return emptyList()
+        buf.int // skip 4-byte reserved
+    }
+    if (buf.remaining() < 1) return emptyList()
+    val count = buf.get().toInt() and 0xFF
+    val out = mutableListOf<VideoChapter>()
+    for (i in 0 until count) {
+        if (buf.remaining() < 9) break
+        val timestamp100Ns = buf.long
+        val titleLen = buf.get().toInt() and 0xFF
+        if (buf.remaining() < titleLen) break
+        val titleBytes = ByteArray(titleLen)
+        buf.get(titleBytes)
+        val startMs = (timestamp100Ns / 10_000L).coerceAtLeast(0L)
+        val title = String(titleBytes, Charsets.UTF_8).trim().ifEmpty { "Chapter ${i + 1}" }
+        out.add(VideoChapter(title = title, startTimeMs = startMs))
+    }
+    return out.distinctBy { it.startTimeMs }.sortedBy { it.startTimeMs }
+}
+
+private fun findMp4BoxRange(
+    channel: FileChannel,
+    startPos: Long,
+    endPos: Long,
+    targetFourCc: Int
+): Pair<Long, Long>? {
+    channel.position(startPos)
+    val headerBuf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+    var iterations = 0
+    while (channel.position() + 8L <= endPos && iterations++ < 256) {
+        val boxStart = channel.position()
+        headerBuf.clear()
+        headerBuf.limit(8)
+        if (readBufferFully(channel, headerBuf) < 8) break
+        headerBuf.flip()
+        val size32 = headerBuf.int.toLong() and 0xFFFFFFFFL
+        val type = headerBuf.int
+        var headerLen = 8L
+        val boxSize = when (size32) {
+            0L -> endPos - boxStart
+            1L -> {
+                if (channel.position() + 8L > endPos) break
+                headerBuf.clear()
+                headerBuf.limit(8)
+                if (readBufferFully(channel, headerBuf) < 8) break
+                headerBuf.flip()
+                headerLen = 16L
+                headerBuf.long
+            }
+            else -> size32
+        }
+        if (boxSize < headerLen) break
+        val dataStart = boxStart + headerLen
+        val boxEnd = minOf(endPos, boxStart + boxSize)
+        if (type == targetFourCc) {
+            return dataStart to boxEnd
+        }
+        if (boxEnd <= boxStart) break
+        channel.position(boxEnd)
+    }
+    return null
+}
+
+private fun readSingleByte(channel: FileChannel): Int? {
+    val buf = ByteBuffer.allocate(1)
+    val n = channel.read(buf)
+    if (n != 1) return null
+    return buf.get(0).toInt() and 0xFF
+}
+
+private fun readFullyFromChannel(channel: FileChannel, dest: ByteArray, offset: Int, len: Int): Int {
+    val buf = ByteBuffer.wrap(dest, offset, len)
+    return readBufferFully(channel, buf)
+}
+
+private fun readBufferFully(channel: FileChannel, buf: ByteBuffer): Int {
+    var total = 0
+    while (buf.hasRemaining()) {
+        val n = channel.read(buf)
+        if (n <= 0) break
+        total += n
+    }
+    return total
+}
+
+internal fun findChapterForPosition(chapters: List<VideoChapter>, positionMs: Long): VideoChapter? {
     if (chapters.isEmpty()) return null
     return chapters.lastOrNull { it.startTimeMs <= positionMs } ?: chapters.firstOrNull()
 }
@@ -4108,4 +5267,104 @@ private fun parseExoTracks(tracks: Tracks): Pair<List<AudioTrackUiModel>, List<S
         }
     }
     return parsedAudio to parsedSubs
+}
+
+@Composable
+private fun rememberVideoLuminanceState(
+    playerView: PlayerView?,
+    isControlsVisible: Boolean,
+    isPlaying: Boolean,
+    isInPipMode: Boolean
+): Boolean {
+    var isLightTopRegion by remember { mutableStateOf(false) }
+
+    LaunchedEffect(playerView, isControlsVisible, isPlaying, isInPipMode) {
+        if (isControlsVisible || isInPipMode || playerView == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            isLightTopRegion = false
+            return@LaunchedEffect
+        }
+
+        while (true) {
+            val luminance = sampleTopRegionLuminance(playerView)
+            if (luminance != null) {
+                isLightTopRegion = luminance >= 0.5f
+            }
+            delay(800L)
+        }
+    }
+
+    return isLightTopRegion
+}
+
+private suspend fun sampleTopRegionLuminance(playerView: PlayerView): Float? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+    val surfaceView = playerView.videoSurfaceView ?: return null
+    if (!surfaceView.isAttachedToWindow || surfaceView.width <= 0 || surfaceView.height <= 0) {
+        return null
+    }
+
+    val sampleWidth = 32
+    val sampleHeight = 18
+
+    val bitmap: Bitmap = when (surfaceView) {
+        is SurfaceView -> {
+            val surface = surfaceView.holder?.surface
+            if (surface == null || !surface.isValid) return null
+            val destBitmap = Bitmap.createBitmap(sampleWidth, sampleHeight, Bitmap.Config.ARGB_8888)
+            val copyStatus = withTimeoutOrNull(400L) {
+                suspendCancellableCoroutine<Int> { cont ->
+                    runCatching {
+                        PixelCopy.request(
+                            surfaceView,
+                            destBitmap,
+                            { result ->
+                                if (cont.isActive) {
+                                    cont.resume(result)
+                                }
+                            },
+                            Handler(Looper.getMainLooper())
+                        )
+                    }.onFailure {
+                        if (cont.isActive) {
+                            cont.resume(PixelCopy.ERROR_UNKNOWN)
+                        }
+                    }
+                }
+            }
+            if (copyStatus != PixelCopy.SUCCESS) {
+                destBitmap.recycle()
+                return null
+            }
+            destBitmap
+        }
+        is TextureView -> {
+            if (!surfaceView.isAvailable) return null
+            surfaceView.getBitmap(sampleWidth, sampleHeight) ?: return null
+        }
+        else -> return null
+    }
+
+    return try {
+        withContext(Dispatchers.Default) {
+            val width = bitmap.width
+            val topRows = (bitmap.height / 4).coerceAtLeast(3).coerceAtMost(bitmap.height)
+            if (width <= 0 || topRows <= 0) return@withContext null
+
+            val pixels = IntArray(width * topRows)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, topRows)
+
+            var totalLuminance = 0f
+            for (px in pixels) {
+                val r = ((px shr 16) and 0xFF) / 255f
+                val g = ((px shr 8) and 0xFF) / 255f
+                val b = (px and 0xFF) / 255f
+                totalLuminance += (0.299f * r + 0.587f * g + 0.114f * b)
+            }
+            (totalLuminance / pixels.size.toFloat()).coerceIn(0f, 1f)
+        }
+    } finally {
+        if (!bitmap.isRecycled) {
+            bitmap.recycle()
+        }
+    }
 }

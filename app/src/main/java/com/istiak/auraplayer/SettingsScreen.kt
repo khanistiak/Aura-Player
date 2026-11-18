@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Info
@@ -56,10 +57,6 @@ import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
 import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 
-private val SettingsCobaltActive = Color(0xFF2563EB)
-private val SettingsIconBgLight = Color(0xFFEEF2FF)
-private val SettingsDividerLight = Color(0xFFE8ECF8)
-
 private data class SettingsCategoryEntry(
     val key: String,
     val title: String,
@@ -71,14 +68,15 @@ private data class SettingsCategoryEntry(
 /**
  * Category-Only Root Settings Hub (`SettingsScreen.kt`):
  * - Frozen `ScrollAwareFixedHeader`: `← Settings`
- * - Single elevated frosted card (`20.dp` radius, hairline dividers, leading pastel squircle icon badge,
- *   bold single-line title, right chevron `>`) with 7 mutually exclusive categories.
+ * - Single elevated frosted card (`20.dp` radius, hairline dividers, leading tinted squircle icon badge,
+ *   bold single-line title, right chevron `>`) with top-level categories including `Liquid glass`.
  * - Zero inline switches, speed pills, seek pills, sliders, or duplicate controls.
  */
 @Composable
 fun SettingsScreen(
     settings: AppSettingsState,
     onOpenAppearanceSettings: () -> Unit,
+    onOpenLiquidGlassSettings: () -> Unit = {},
     onOpenFolderSettings: () -> Unit,
     onOpenPlayerSettings: () -> Unit,
     onOpenGestureSettings: () -> Unit,
@@ -100,6 +98,15 @@ fun SettingsScreen(
                 icon = Icons.Filled.Palette,
                 testTag = "settings_category_appearance",
                 onClick = onOpenAppearanceSettings
+            )
+        )
+        add(
+            SettingsCategoryEntry(
+                key = "liquid_glass",
+                title = "Liquid glass",
+                icon = Icons.Filled.AutoAwesome,
+                testTag = "settings_category_liquid_glass",
+                onClick = onOpenLiquidGlassSettings
             )
         )
         add(
@@ -170,28 +177,29 @@ fun SettingsScreen(
         horizontalPadding = 12.dp
     )
 
+    val primary = MaterialTheme.colorScheme.primary
     val cardShape = RoundedCornerShape(20.dp)
     val cardBg = if (isDark) {
-        Color(0xFF161B2E).copy(alpha = 0.80f)
+        palette.sheetBackground.copy(alpha = 0.84f)
     } else {
-        Color.White.copy(alpha = 0.84f)
+        Color.White.copy(alpha = 0.86f)
     }
     val borderBrush = if (isDark) {
         Brush.verticalGradient(
             listOf(
                 Color.White.copy(alpha = 0.22f),
-                Color(0xFF60A5FA).copy(alpha = 0.14f)
+                primary.copy(alpha = 0.16f)
             )
         )
     } else {
         Brush.verticalGradient(
             listOf(
                 Color.White.copy(alpha = 0.94f),
-                Color(0xFFD6D9F8).copy(alpha = 0.72f)
+                palette.outlineBorder.copy(alpha = 0.72f)
             )
         )
     }
-    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else SettingsDividerLight
+    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else palette.outlineBorder.copy(alpha = 0.70f)
 
     Box(
         modifier = Modifier
@@ -217,8 +225,8 @@ fun SettingsScreen(
                         .shadow(
                             elevation = 6.dp,
                             shape = cardShape,
-                            ambientColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.28f else 0.07f),
-                            spotColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.28f else 0.09f)
+                            ambientColor = primary.copy(alpha = if (isDark) 0.28f else 0.07f),
+                            spotColor = primary.copy(alpha = if (isDark) 0.28f else 0.09f)
                         )
                         .clip(cardShape)
                         .background(cardBg)
@@ -288,8 +296,9 @@ private fun SettingsCategoryRow(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val iconContainerBg = if (isDark) SettingsCobaltActive.copy(alpha = 0.18f) else SettingsIconBgLight
-    val iconTint = if (isDark) Color(0xFF60A5FA) else SettingsCobaltActive
+    val primary = MaterialTheme.colorScheme.primary
+    val iconContainerBg = primary.copy(alpha = if (isDark) 0.16f else 0.12f)
+    val iconTint = primary
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -302,8 +311,8 @@ private fun SettingsCategoryRow(
     ) {
         Box(
             modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .size(36.dp)
+                .clip(RoundedCornerShape(12.dp))
                 .background(iconContainerBg),
             contentAlignment = Alignment.Center
         ) {

@@ -1,6 +1,5 @@
 package com.istiak.auraplayer
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -19,8 +18,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -29,13 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.istiak.auraplayer.ui.components.FrostedBackdropState
 import com.istiak.auraplayer.ui.components.LocalFrostedBackdropState
-import com.istiak.auraplayer.ui.components.recordFrostedBackground
-import com.istiak.auraplayer.ui.theme.AmbientLilacLavenderTopRight
-import com.istiak.auraplayer.ui.theme.AmbientNavyTop
-import com.istiak.auraplayer.ui.theme.AmbientObsidianBottom
-import com.istiak.auraplayer.ui.theme.AmbientSkyBlueTop
-import com.istiak.auraplayer.ui.theme.AmbientSoftOffWhiteBase
-import com.istiak.auraplayer.ui.theme.AmbientVioletTopRight
+import com.istiak.auraplayer.ui.theme.AppThemePalette
 import com.istiak.auraplayer.ui.theme.AuraPlayerTheme
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 
@@ -57,6 +48,7 @@ enum class MainNavTab(
 @Composable
 fun MaterialYouTheme(
     darkTheme: Boolean = false,
+    themePalette: AppThemePalette = AppThemePalette.AURORA,
     content: @Composable () -> Unit
 ) {
     val contentGraphicsLayer = rememberGraphicsLayer()
@@ -70,96 +62,27 @@ fun MaterialYouTheme(
     CompositionLocalProvider(LocalFrostedBackdropState provides backdropState) {
         AuraPlayerTheme(
             darkTheme = darkTheme,
+            themePalette = themePalette,
             content = content
         )
     }
 }
 
 /**
- * Full-Bleed Pastel Sky-Blue to Soft-Lavender Ambient Background Canvas:
- * - Light Mode: top-left soft icy sky-blue bloom (`#DCEEFF`), top-right soft pastel
- *   lilac-lavender bloom (`#ECE2FF`), blending smoothly into airy soft off-white (`#F8F9FE`)
- *   across the middle and bottom of the screen.
- * - Dark Mode: deep obsidian-indigo gradient canvas (`#0B0E1A` base with `#172546` top-left
- *   and `#281D45` top-right blooms).
- * - Attaches `.recordFrostedBackground(backdropState)` to the ambient `Canvas` so
- *   `ScrollAwareFixedHeader` and `FrostedGlassSurface` refract both the background gradient
- *   and scrolling thumbnails accurately.
+ * Transparent screen container that preserves the single unified root theme background painted once
+ * in [AuraPlayerTheme], preventing any background color or tint shift during screen navigation transitions.
  */
 @Composable
 fun PastelMeshBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val palette = LocalExtendedPalette.current
-    val isDark = palette.isDark
-    val existingBackdrop = LocalFrostedBackdropState.current
-    val fallbackContentLayer = rememberGraphicsLayer()
-    val fallbackBackgroundLayer = rememberGraphicsLayer()
-    val backdropState = existingBackdrop ?: remember(fallbackContentLayer, fallbackBackgroundLayer) {
-        FrostedBackdropState(
-            contentGraphicsLayer = fallbackContentLayer,
-            backgroundGraphicsLayer = fallbackBackgroundLayer
-        )
-    }
-
-    val baseColor = if (isDark) AmbientObsidianBottom else AmbientSoftOffWhiteBase
-    val topLeftBloom = if (isDark) AmbientNavyTop else AmbientSkyBlueTop
-    val topRightBloom = if (isDark) AmbientVioletTopRight else AmbientLilacLavenderTopRight
-
-    CompositionLocalProvider(LocalFrostedBackdropState provides backdropState) {
-        Box(
-            modifier = modifier.fillMaxSize()
-        ) {
-            Canvas(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .recordFrostedBackground(backdropState)
-            ) {
-                // Base off-white (#F8F9FE) / deep obsidian canvas
-                drawRect(color = baseColor)
-
-                val maxDim = size.maxDimension.coerceAtLeast(1f)
-                // Top-left soft icy sky-blue bloom (#DCEEFF)
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            topLeftBloom,
-                            topLeftBloom.copy(alpha = 0.65f),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * 0.12f, size.height * 0.06f),
-                        radius = maxDim * 0.68f
-                    )
-                )
-
-                // Top-right soft pastel lilac-lavender bloom (#ECE2FF)
-                drawRect(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            topRightBloom,
-                            topRightBloom.copy(alpha = 0.62f),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * 0.90f, size.height * 0.09f),
-                        radius = maxDim * 0.64f
-                    )
-                )
-
-                // Smooth vertical transition into airy soft off-white (#F8F9FE) across middle & bottom
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        0.0f to Color.Transparent,
-                        0.36f to baseColor.copy(alpha = 0.45f),
-                        0.68f to baseColor.copy(alpha = 0.92f),
-                        1.0f to baseColor
-                    )
-                )
-            }
-
-            content()
-        }
-    }
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Transparent),
+        content = content
+    )
 }
 
 /**

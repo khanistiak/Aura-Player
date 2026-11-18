@@ -12,6 +12,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -24,16 +25,18 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -84,6 +88,11 @@ import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import com.istiak.auraplayer.ui.components.FrostedGlassSurface
+import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
+import com.istiak.auraplayer.ui.components.ScrollAwareGlassLayoutState
+import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
+import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.CardBorderIceBlue
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import kotlinx.coroutines.Dispatchers
@@ -264,22 +273,137 @@ fun MediaInfoScreen(
         }
     }
 
-    Column(
+    val overviewListState = rememberLazyListState()
+    val thumbListState = rememberLazyListState()
+    val videoListState = rememberLazyListState()
+    val audioListState = rememberLazyListState()
+    val subtitleListState = rememberLazyListState()
+    val imageOtherListState = rememberLazyListState()
+    val rawScrollState = rememberScrollState()
+
+    val activeLazyListState = when (selectedCategory) {
+        MediaInfoCategory.OVERVIEW -> overviewListState
+        MediaInfoCategory.THUMBNAIL -> thumbListState
+        MediaInfoCategory.VIDEO -> videoListState
+        MediaInfoCategory.AUDIO -> audioListState
+        MediaInfoCategory.SUBTITLES -> subtitleListState
+        MediaInfoCategory.IMAGE_OTHER -> imageOtherListState
+        MediaInfoCategory.RAW -> overviewListState
+    }
+
+    val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val scrollLayout = rememberScrollAwareGlassLayout(
+        listState = activeLazyListState,
+        defaultHeaderHeight = 64.dp,
+        extraTopGap = 6.dp,
+        scrollState = rawScrollState,
+        useScrollState = selectedCategory == MediaInfoCategory.RAW,
+        bottomPadding = navBottomDp + 84.dp,
+        horizontalPadding = 16.dp
+    )
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .testTag("media_info_screen")
     ) {
-        // Top App Bar
-        Surface(
-            color = if (palette.isDark) Color(0xFF101829).copy(alpha = 0.85f)
-            else Color.White.copy(alpha = 0.80f),
-            tonalElevation = 2.dp
+        // Scrollable Body (scrolls continuously beneath both frosted top header & frosted bottom tabs)
+        if (isLoading || mediaInfo == null) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = palette.brandTitleColor)
+            }
+        } else {
+            val info = mediaInfo!!
+            when (selectedCategory) {
+                MediaInfoCategory.OVERVIEW -> OverviewTabContent(
+                    info = info,
+                    listState = overviewListState,
+                    scrollLayout = scrollLayout,
+                    onCopyField = { label, value ->
+                        copyTextToClipboard(label, value, "Copied $label to clipboard")
+                    }
+                )
+                MediaInfoCategory.THUMBNAIL -> ThumbnailTabContent(
+                    video = video,
+                    info = info,
+                    listState = thumbListState,
+                    scrollLayout = scrollLayout,
+                    onRefresh = { refreshTrigger++ },
+                    onCopyPath = { value ->
+                        copyTextToClipboard("Thumbnail Path", value, "Copied path to clipboard")
+                    }
+                )
+                MediaInfoCategory.VIDEO -> VideoStreamsTabContent(
+                    streams = info.videoStreams,
+                    listState = videoListState,
+                    scrollLayout = scrollLayout,
+                    onCopyStream = { spec ->
+                        copyTextToClipboard(
+                            "Video Stream #${spec.index}",
+                            buildVideoStreamDump(spec),
+                            "Copied Video Stream #${spec.index}"
+                        )
+                    }
+                )
+                MediaInfoCategory.AUDIO -> AudioStreamsTabContent(
+                    streams = info.audioStreams,
+                    listState = audioListState,
+                    scrollLayout = scrollLayout,
+                    onCopyStream = { spec ->
+                        copyTextToClipboard(
+                            "Audio Stream #${spec.index}",
+                            buildAudioStreamDump(spec),
+                            "Copied Audio Stream #${spec.index}"
+                        )
+                    }
+                )
+                MediaInfoCategory.SUBTITLES -> SubtitlesTabContent(
+                    streams = info.subtitleStreams,
+                    listState = subtitleListState,
+                    scrollLayout = scrollLayout,
+                    onCopyStream = { spec ->
+                        copyTextToClipboard(
+                            "Subtitle Track #${spec.index}",
+                            buildSubtitleStreamDump(spec),
+                            "Copied Subtitle Track #${spec.index}"
+                        )
+                    }
+                )
+                MediaInfoCategory.IMAGE_OTHER -> ImageOtherTabContent(
+                    attachments = info.attachments,
+                    listState = imageOtherListState,
+                    scrollLayout = scrollLayout
+                )
+                MediaInfoCategory.RAW -> RawDumpTabContent(
+                    info = info,
+                    scrollState = rawScrollState,
+                    scrollLayout = scrollLayout,
+                    onCopyAll = {
+                        copyTextToClipboard(
+                            "Media Info Raw",
+                            info.rawDump,
+                            "Copied specifications to clipboard"
+                        )
+                    }
+                )
+            }
+        }
+
+        // Scroll-aware, bottom-feathered Liquid Glass Top App Bar
+        ScrollAwareFixedHeader(
+            layoutState = scrollLayout,
+            blurRadius = 18.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(start = 4.dp, end = 6.dp, top = 6.dp, bottom = 10.dp)
             ) {
                 IconButton(
@@ -352,85 +476,20 @@ fun MediaInfoScreen(
             }
         }
 
-        // Scrollable Body
-        Box(modifier = Modifier.weight(1f)) {
-            if (isLoading || mediaInfo == null) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(color = palette.brandTitleColor)
-                }
+        // Bottom Frosted Liquid Glass Category Tabs Bar
+        FrostedGlassSurface(
+            shape = RectangleShape,
+            blurRadius = 16.dp,
+            featherBottomEdge = false,
+            glassProgressOverride = 1f,
+            baseBackgroundColor = if (palette.isDark) {
+                Color(0xFF141C2E).copy(alpha = 0.52f)
             } else {
-                val info = mediaInfo!!
-                when (selectedCategory) {
-                    MediaInfoCategory.OVERVIEW -> OverviewTabContent(
-                        info = info,
-                        onCopyField = { label, value ->
-                            copyTextToClipboard(label, value, "Copied $label to clipboard")
-                        }
-                    )
-                    MediaInfoCategory.THUMBNAIL -> ThumbnailTabContent(
-                        video = video,
-                        info = info,
-                        onRefresh = { refreshTrigger++ },
-                        onCopyPath = { value ->
-                            copyTextToClipboard("Thumbnail Path", value, "Copied path to clipboard")
-                        }
-                    )
-                    MediaInfoCategory.VIDEO -> VideoStreamsTabContent(
-                        streams = info.videoStreams,
-                        onCopyStream = { spec ->
-                            copyTextToClipboard(
-                                "Video Stream #${spec.index}",
-                                buildVideoStreamDump(spec),
-                                "Copied Video Stream #${spec.index}"
-                            )
-                        }
-                    )
-                    MediaInfoCategory.AUDIO -> AudioStreamsTabContent(
-                        streams = info.audioStreams,
-                        onCopyStream = { spec ->
-                            copyTextToClipboard(
-                                "Audio Stream #${spec.index}",
-                                buildAudioStreamDump(spec),
-                                "Copied Audio Stream #${spec.index}"
-                            )
-                        }
-                    )
-                    MediaInfoCategory.SUBTITLES -> SubtitlesTabContent(
-                        streams = info.subtitleStreams,
-                        onCopyStream = { spec ->
-                            copyTextToClipboard(
-                                "Subtitle Track #${spec.index}",
-                                buildSubtitleStreamDump(spec),
-                                "Copied Subtitle Track #${spec.index}"
-                            )
-                        }
-                    )
-                    MediaInfoCategory.IMAGE_OTHER -> ImageOtherTabContent(
-                        attachments = info.attachments
-                    )
-                    MediaInfoCategory.RAW -> RawDumpTabContent(
-                        info = info,
-                        onCopyAll = {
-                            copyTextToClipboard(
-                                "Media Info Raw",
-                                info.rawDump,
-                                "Copied specifications to clipboard"
-                            )
-                        }
-                    )
-                }
-            }
-        }
-
-        // Bottom Scrollable Category Tabs (dark slate pill highlight on active tab)
-        Surface(
-            color = if (palette.isDark) Color(0xFF101829).copy(alpha = 0.92f)
-            else Color.White.copy(alpha = 0.88f),
-            tonalElevation = 4.dp,
-            shadowElevation = 8.dp
+                Color.White.copy(alpha = 0.42f)
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
         ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -474,14 +533,22 @@ fun MediaInfoScreen(
 @Composable
 private fun OverviewTabContent(
     info: DetailedMediaInfo,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onCopyField: (String, String) -> Unit
 ) {
     val palette = LocalExtendedPalette.current
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_overview_tab")
     ) {
         item {
@@ -660,6 +727,8 @@ private fun OverviewTabContent(
 private fun ThumbnailTabContent(
     video: VideoItem,
     info: DetailedMediaInfo,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onRefresh: () -> Unit,
     onCopyPath: (String) -> Unit
 ) {
@@ -669,10 +738,16 @@ private fun ThumbnailTabContent(
     val thumb = info.thumbnailInfo
 
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_thumbnail_tab")
     ) {
         item {
@@ -788,13 +863,21 @@ private fun ThumbnailTabContent(
 @Composable
 private fun VideoStreamsTabContent(
     streams: List<VideoStreamSpec>,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onCopyStream: (VideoStreamSpec) -> Unit
 ) {
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_video_tab")
     ) {
         if (streams.isEmpty()) {
@@ -843,13 +926,21 @@ private fun VideoStreamsTabContent(
 @Composable
 private fun AudioStreamsTabContent(
     streams: List<AudioStreamSpec>,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onCopyStream: (AudioStreamSpec) -> Unit
 ) {
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_audio_tab")
     ) {
         if (streams.isEmpty()) {
@@ -897,13 +988,21 @@ private fun AudioStreamsTabContent(
 @Composable
 private fun SubtitlesTabContent(
     streams: List<SubtitleStreamSpec>,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onCopyStream: (SubtitleStreamSpec) -> Unit
 ) {
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_subtitles_tab")
     ) {
         if (streams.isEmpty()) {
@@ -939,14 +1038,22 @@ private fun SubtitlesTabContent(
 
 @Composable
 private fun ImageOtherTabContent(
-    attachments: List<AttachmentSpec>
+    attachments: List<AttachmentSpec>,
+    listState: LazyListState,
+    scrollLayout: ScrollAwareGlassLayoutState
 ) {
     val palette = LocalExtendedPalette.current
     LazyColumn(
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        contentPadding = scrollLayout.contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
             .fillMaxSize()
+            .recordFrostedBackdrop(
+                backdropState = scrollLayout.backdropState,
+                scrollableState = listState,
+                contentLayerOverride = scrollLayout.contentGraphicsLayer
+            )
             .testTag("media_info_image_other_tab")
     ) {
         if (attachments.isEmpty()) {
@@ -996,13 +1103,15 @@ private fun ImageOtherTabContent(
 @Composable
 private fun RawDumpTabContent(
     info: DetailedMediaInfo,
+    scrollState: ScrollState,
+    scrollLayout: ScrollAwareGlassLayoutState,
     onCopyAll: () -> Unit
 ) {
     val palette = LocalExtendedPalette.current
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(scrollLayout.contentPadding)
             .testTag("media_info_raw_tab")
     ) {
         Surface(
@@ -1061,7 +1170,12 @@ private fun RawDumpTabContent(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
+                        .recordFrostedBackdrop(
+                            backdropState = scrollLayout.backdropState,
+                            scrollableState = scrollState,
+                            contentLayerOverride = scrollLayout.contentGraphicsLayer
+                        )
+                        .verticalScroll(scrollState)
                         .horizontalScroll(rememberScrollState())
                         .padding(14.dp)
                 ) {

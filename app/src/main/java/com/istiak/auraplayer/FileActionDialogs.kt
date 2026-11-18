@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -41,9 +45,18 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -51,10 +64,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,19 +78,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.istiak.auraplayer.ui.components.FrostedGlassSurface
 import com.istiak.auraplayer.ui.components.crystalOuterShadow
+import com.istiak.auraplayer.ui.theme.AppThemePalette
 import com.istiak.auraplayer.ui.theme.DangerRed
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import com.istiak.auraplayer.ui.theme.MxBlueAccent
@@ -393,9 +416,250 @@ private fun DockActionButton(
     }
 }
 
+@Composable
+private fun auraFileDialogSurfaceColor(): Color {
+    val palette = LocalExtendedPalette.current
+    return if (palette.themePalette == AppThemePalette.AURORA) {
+        if (palette.isDark) Color(0xFF111827) else Color(0xFFF8FAFF)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+}
+
 /**
- * Centered rounded Rename File dialog (`24.dp` corners) with "New name" outlined text field
- * pre-filled with the filename, Cancel text button, and pill-shaped Rename button.
+ * Confirmation dialog shown before permanently deleting one or more videos from device storage.
+ */
+@Composable
+fun DeleteConfirmationDialog(
+    videos: List<VideoItem>,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (videos.isEmpty()) return
+    val count = videos.size
+    val destructiveRed = Color(0xFFDC2626)
+    val surfaceColor = auraFileDialogSurfaceColor()
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val bodyText = if (count == 1) {
+        val fileName = videos.first().displayName
+        buildAnnotatedString {
+            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)) {
+                append(fileName)
+            }
+            append(" will be permanently removed from your device.")
+        }
+    } else {
+        buildAnnotatedString {
+            append("$count selected videos will be permanently removed from your device.")
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = surfaceColor,
+            border = BorderStroke(1.dp, borderColor),
+            tonalElevation = 6.dp,
+            shadowElevation = 16.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("delete_confirmation_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 20.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(destructiveRed.copy(alpha = 0.12f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = null,
+                        tint = destructiveRed,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = if (count == 1) "Delete video?" else "Delete $count videos?",
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = bodyText,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("delete_confirm_cancel_button")
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onConfirm,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = destructiveRed,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .testTag("delete_confirm_button")
+                    ) {
+                        Text(
+                            text = "Delete",
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Confirmation dialog shown before encrypting/moving videos into the Private Vault (.private + .kv).
+ */
+@Composable
+fun MoveToVaultConfirmationDialog(
+    videos: List<VideoItem>,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (videos.isEmpty()) return
+    val count = videos.size
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val surfaceColor = auraFileDialogSurfaceColor()
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val singleTitle = videos.first().let { vid ->
+        vid.title.ifBlank { vid.displayName }
+    }
+    val bodyMessage = if (count == 1) {
+        "Hide \"$singleTitle\" in your PIN/biometric-protected Private Vault? It will be removed from public folders and gallery."
+    } else {
+        "Hide $count selected videos in your Private Vault? They will be removed from public folders and gallery."
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = surfaceColor,
+            border = BorderStroke(1.dp, borderColor),
+            tonalElevation = 6.dp,
+            shadowElevation = 16.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("move_to_vault_confirmation_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 20.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(primaryColor.copy(alpha = 0.12f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Lock,
+                        contentDescription = null,
+                        tint = primaryColor,
+                        modifier = Modifier.size(25.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Move to Private Vault?",
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = bodyMessage,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("vault_confirm_cancel_button")
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onConfirm,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = primaryColor,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .testTag("vault_confirm_button")
+                    ) {
+                        Text(
+                            text = "Move to Vault",
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Redesigned Rename Video dialog (`24.dp` corners) with Aura Blue icon badge, extension pill badge,
+ * auto-focused `OutlinedTextField` with cursor at end, clear `×` button, and inline invalid-character validation.
  */
 @Composable
 fun RenameFileDialog(
@@ -403,14 +667,38 @@ fun RenameFileDialog(
     onDismiss: () -> Unit,
     onConfirmRename: (String) -> Unit
 ) {
-    val palette = LocalExtendedPalette.current
-    val initialName = remember(video.id) { video.displayName.substringBeforeLast('.') }
-    var newName by remember(video.id) { mutableStateOf(initialName) }
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val surfaceColor = auraFileDialogSurfaceColor()
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val extension = remember(video.displayName, video.extensionLabel) {
+        val rawExt = video.displayName.substringAfterLast('.', "").lowercase(Locale.US)
+        rawExt.ifBlank { video.extensionLabel.lowercase(Locale.US) }
+    }
+    val initialName = remember(video.id, video.displayName) {
+        video.displayName.substringBeforeLast('.')
+    }
+    var nameValue by remember(video.id, video.displayName) {
+        mutableStateOf(
+            TextFieldValue(
+                text = initialName,
+                selection = TextRange(initialName.length)
+            )
+        )
+    }
+    val focusRequester = remember { FocusRequester() }
+    val invalidChars = remember { setOf('/', '\\', ':', '*', '?', '"', '<', '>', '|') }
+    val trimmedName = nameValue.text.trim()
+    val hasInvalidChars = nameValue.text.any { it in invalidChars }
+    val isRenameEnabled = trimmedName.isNotEmpty() && !hasInvalidChars
 
     Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(video.id) {
+            runCatching { focusRequester.requestFocus() }
+        }
         Surface(
             shape = RoundedCornerShape(24.dp),
-            color = palette.sheetBackground,
+            color = surfaceColor,
+            border = BorderStroke(1.dp, borderColor),
             tonalElevation = 6.dp,
             shadowElevation = 16.dp,
             modifier = Modifier
@@ -422,28 +710,104 @@ fun RenameFileDialog(
                     .fillMaxWidth()
                     .padding(horizontal = 22.dp, vertical = 20.dp)
             ) {
-                Text(
-                    text = "Rename file",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.primaryText
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "Extension .${video.extensionLabel.lowercase(Locale.US)} will be preserved automatically.",
-                    fontSize = 12.5.sp,
-                    color = palette.secondaryText
-                )
-                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(primaryColor.copy(alpha = 0.12f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = null,
+                            tint = primaryColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Rename video",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(primaryColor.copy(alpha = 0.12f))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    .testTag("rename_extension_badge")
+                            ) {
+                                Text(
+                                    text = ".$extension",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = primaryColor
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Extension .$extension is preserved automatically",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 OutlinedTextField(
-                    value = newName,
-                    onValueChange = { newName = it },
+                    value = nameValue,
+                    onValueChange = { nameValue = it },
                     singleLine = true,
-                    label = { Text("New name") },
+                    isError = hasInvalidChars,
+                    label = { Text("File name") },
+                    trailingIcon = {
+                        if (nameValue.text.isNotEmpty()) {
+                            IconButton(
+                                onClick = { nameValue = TextFieldValue("") },
+                                modifier = Modifier.testTag("rename_clear_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Clear name",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    },
+                    supportingText = if (hasInvalidChars) {
+                        {
+                            Text(
+                                text = "Cannot contain / \\ : * ? \" < > |",
+                                fontSize = 12.sp,
+                                color = DangerRed
+                            )
+                        }
+                    } else null,
                     shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = primaryColor,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedLabelColor = primaryColor,
+                        cursorColor = primaryColor
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .focusRequester(focusRequester)
                         .testTag("rename_file_input")
                 )
 
@@ -454,20 +818,27 @@ fun RenameFileDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("rename_cancel_button")
+                    ) {
                         Text(
                             text = "Cancel",
-                            color = palette.secondaryText,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.Medium
                         )
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = { onConfirmRename(newName) },
-                        enabled = newName.trim().isNotEmpty(),
-                        shape = RoundedCornerShape(999.dp),
+                        onClick = {
+                            if (isRenameEnabled) {
+                                onConfirmRename(trimmedName)
+                            }
+                        },
+                        enabled = isRenameEnabled,
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = palette.brandTitleColor,
+                            containerColor = primaryColor,
                             contentColor = Color.White
                         ),
                         modifier = Modifier
@@ -487,11 +858,11 @@ fun RenameFileDialog(
 }
 
 /**
- * Frosted Playlist Picker Dialog titled "Add to Playlist":
- * - Subtitle "Adding X video(s)"
- * - Full-width outlined "+ Create New Playlist" button
- * - "Search playlists" bar
- * - "Existing Playlists" checkable list (starting with "Favorites")
+ * Solid opaque Material 3 Add to Playlist Dialog (`24.dp` corners):
+ * - Header with Aura Blue `PlaylistAdd` badge, subtitle `"Adding X video(s)"`, and close button
+ * - Single-plus `"Create New Playlist"` outlined action button
+ * - Compact `"Search playlists"` bar with clear button
+ * - `"Existing Playlists"` checkable list with theme-colored checkboxes & leading icon badges
  */
 @Composable
 fun AddToPlaylistSheet(
@@ -501,8 +872,9 @@ fun AddToPlaylistSheet(
     onAddVideosToPlaylists: (Set<String>) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val palette = LocalExtendedPalette.current
-    val isDark = palette.isDark
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val surfaceColor = auraFileDialogSurfaceColor()
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
     var searchQuery by remember { mutableStateOf("") }
     var selectedPlaylistIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -515,262 +887,322 @@ fun AddToPlaylistSheet(
         }
     }
 
-    val dialogShape = RoundedCornerShape(26.dp)
-    val glassBg = if (isDark) Color(0xFF141B2D).copy(alpha = 0.88f) else Color.White.copy(alpha = 0.86f)
-    val rimBrush = if (isDark) {
-        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.26f), Color.White.copy(alpha = 0.08f)))
-    } else {
-        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.95f), Color(0xFFD6D9F8).copy(alpha = 0.65f)))
-    }
-
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = surfaceColor,
+            tonalElevation = 0.dp,
+            shadowElevation = 12.dp,
+            border = BorderStroke(1.dp, borderColor),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
+                .widthIn(max = 460.dp)
+                .wrapContentHeight()
+                .heightIn(max = 460.dp)
+                .testTag("add_to_playlist_sheet")
         ) {
-            FrostedGlassSurface(
-                shape = dialogShape,
-                blurRadius = 24.dp,
-                border = BorderStroke(1.2.dp, rimBrush),
-                glassProgressOverride = 1f,
-                baseBackgroundColor = glassBg,
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .crystalOuterShadow(shape = dialogShape, isDark = isDark, elevation = 18.dp)
-                    .testTag("add_to_playlist_sheet")
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
-                Column(
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(primaryColor.copy(alpha = 0.12f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            contentDescription = null,
+                            tint = primaryColor,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Add to Playlist",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Adding $videoCount ${if (videoCount == 1) "video" else "videos"}",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("close_add_to_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = primaryColor.copy(alpha = 0.08f),
+                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 20.dp)
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { showCreateDialog = true }
+                        .testTag("create_new_playlist_button")
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Add to Playlist",
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.primaryText
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Adding $videoCount ${if (videoCount == 1) "video" else "videos"}",
-                                fontSize = 13.sp,
-                                color = palette.secondaryText
-                            )
-                        }
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "Close",
-                                tint = palette.secondaryText
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedButton(
-                        onClick = { showCreateDialog = true },
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, palette.brandTitleColor.copy(alpha = 0.45f)),
+                        horizontalArrangement = Arrangement.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("create_new_playlist_button")
+                            .padding(horizontal = 16.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Add,
+                            imageVector = Icons.Rounded.Add,
                             contentDescription = null,
-                            tint = palette.brandTitleColor,
-                            modifier = Modifier.size(18.dp)
+                            tint = primaryColor,
+                            modifier = Modifier.size(19.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "+ Create New Playlist",
-                            color = palette.brandTitleColor,
-                            fontWeight = FontWeight.SemiBold
+                            text = "Create New Playlist",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = primaryColor
                         )
                     }
+                }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                    // Search playlists bar
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(palette.neutralChipBg)
-                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        contentAlignment = Alignment.CenterStart,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = null,
-                            tint = palette.secondaryText,
-                            modifier = Modifier.size(18.dp)
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "Search playlists",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 14.sp
+                            ),
+                            cursorBrush = SolidColor(primaryColor),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("search_playlists_input")
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Box(modifier = Modifier.weight(1f)) {
-                            if (searchQuery.isEmpty()) {
-                                Text(
-                                    text = "Search playlists",
-                                    fontSize = 14.sp,
-                                    color = palette.secondaryText
-                                )
-                            }
-                            BasicTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                    color = palette.primaryText,
-                                    fontSize = 14.sp
-                                ),
-                                cursorBrush = SolidColor(palette.brandTitleColor),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("search_playlists_input")
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { searchQuery = "" },
+                            modifier = Modifier
+                                .size(28.dp)
+                                .testTag("clear_playlist_search_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Clear search",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
+                }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                    Text(
-                        text = "Existing Playlists",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.sectionHeaderBlue
-                    )
+                Text(
+                    text = "Existing Playlists",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = primaryColor
+                )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 260.dp)
-                            .testTag("existing_playlists_list")
-                    ) {
-                        items(filteredPlaylists, key = { it.id }) { playlist ->
-                            val isChecked = playlist.id in selectedPlaylistIds
-                            val isFav = playlist.id == PlaylistRepository.FAVORITES_ID
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(
-                                        if (isChecked) palette.periwinkleBadgeBg
-                                        else palette.neutralChipBg.copy(alpha = 0.65f)
-                                    )
-                                    .clickable {
-                                        selectedPlaylistIds = if (isChecked) {
-                                            selectedPlaylistIds - playlist.id
-                                        } else {
-                                            selectedPlaylistIds + playlist.id
-                                        }
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .testTag("existing_playlists_list")
+                ) {
+                    items(filteredPlaylists, key = { it.id }) { playlist ->
+                        val isChecked = playlist.id in selectedPlaylistIds
+                        val isFav = playlist.id == PlaylistRepository.FAVORITES_ID
+                        val rowShape = RoundedCornerShape(14.dp)
+                        val rowBackground = if (isChecked) {
+                            primaryColor.copy(alpha = 0.10f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp)
+                                .clip(rowShape)
+                                .background(rowBackground)
+                                .then(
+                                    if (isChecked) {
+                                        Modifier.border(
+                                            width = 1.dp,
+                                            color = primaryColor.copy(alpha = 0.40f),
+                                            shape = rowShape
+                                        )
+                                    } else {
+                                        Modifier
                                     }
-                                    .padding(horizontal = 14.dp, vertical = 12.dp)
-                                    .testTag("playlist_item_${playlist.id}")
+                                )
+                                .clickable {
+                                    selectedPlaylistIds = if (isChecked) {
+                                        selectedPlaylistIds - playlist.id
+                                    } else {
+                                        selectedPlaylistIds + playlist.id
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .testTag("playlist_item_${playlist.id}")
+                        ) {
+                            val badgeBg = if (isFav) {
+                                Color(0xFFEC4899).copy(alpha = 0.12f)
+                            } else {
+                                primaryColor.copy(alpha = 0.12f)
+                            }
+                            val badgeIcon = if (isFav) {
+                                Icons.Rounded.Favorite
+                            } else {
+                                Icons.AutoMirrored.Rounded.QueueMusic
+                            }
+                            val badgeTint = if (isFav) Color(0xFFEC4899) else primaryColor
+
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(badgeBg)
                             ) {
                                 Icon(
-                                    imageVector = if (isFav) Icons.Filled.Favorite else Icons.Filled.PlaylistPlay,
+                                    imageVector = badgeIcon,
                                     contentDescription = null,
-                                    tint = when {
-                                        isFav -> Color(0xFFEC4899)
-                                        isChecked -> palette.periwinkleBadgeText
-                                        else -> palette.brandTitleColor
-                                    },
-                                    modifier = Modifier.size(22.dp)
+                                    tint = badgeTint,
+                                    modifier = Modifier.size(19.dp)
                                 )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist.name,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = palette.primaryText,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "${playlist.count} ${if (playlist.count == 1) "video" else "videos"}",
-                                        fontSize = 12.sp,
-                                        color = palette.secondaryText
-                                    )
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(
-                                            if (isChecked) palette.brandTitleColor
-                                            else Color.Transparent
-                                        )
-                                        .border(
-                                            width = 1.5.dp,
-                                            color = if (isChecked) palette.brandTitleColor
-                                            else palette.secondaryText.copy(alpha = 0.4f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (isChecked) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Check,
-                                            contentDescription = "Selected",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
                             }
-                        }
-                    }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
 
-                    Row(
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextButton(onClick = onDismiss) {
-                            Text("Cancel", color = palette.secondaryText)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = { onAddVideosToPlaylists(selectedPlaylistIds) },
-                            enabled = selectedPlaylistIds.isNotEmpty(),
-                            shape = RoundedCornerShape(999.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.brandTitleColor,
-                                contentColor = Color.White
-                            ),
-                            modifier = Modifier
-                                .height(44.dp)
-                                .testTag("confirm_add_to_playlist_button")
-                        ) {
-                            Text(
-                                text = "Add to Selected",
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 8.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = playlist.name,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${playlist.count} ${if (playlist.count == 1) "video" else "videos"}",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = null,
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = primaryColor,
+                                    checkmarkColor = Color.White,
+                                    uncheckedColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                ),
+                                modifier = Modifier.testTag("playlist_checkbox_${playlist.id}")
                             )
                         }
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("cancel_add_to_playlist_button")
+                    ) {
+                        Text(
+                            text = "Cancel",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { onAddVideosToPlaylists(selectedPlaylistIds) },
+                        enabled = selectedPlaylistIds.isNotEmpty(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = primaryColor,
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .testTag("confirm_add_to_playlist_button")
+                    ) {
+                        Text(
+                            text = "Add to Selected",
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                        )
                     }
                 }
             }

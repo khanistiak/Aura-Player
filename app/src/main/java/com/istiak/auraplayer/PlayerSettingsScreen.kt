@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -30,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.Memory
@@ -49,6 +51,7 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -78,10 +81,8 @@ import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 
 private val PsCobaltActive = Color(0xFF2563EB)
 private val PsActiveHighlightLight = Color(0xFFE3E6FA)
-private val PsIconBgLight = Color(0xFFEEF2FF)
 private val PsPeriwinkleTint = Color(0xFFD6D9F8)
 private val PsSlateHeaderLight = Color(0xFF434A6E)
-private val PsDividerLight = Color(0xFFE8ECF8)
 
 /**
  * Player & Decoder Sub-Screen (`PlayerSettingsScreen.kt`):
@@ -89,7 +90,8 @@ private val PsDividerLight = Color(0xFFE8ECF8)
  * - Section `| Video & Orientation`: Orientation (8-option modal dialog), Default Decoder Mode (`HW | HW+ | SW`),
  *   Default Playback Speed (`0.5x | 1x | 1.25x | 1.5x | 2x`).
  * - Section `| Playback Behavior`: Default Resume Playback, Background Audio / PiP,
- *   Auto-Play Next Episode, Show +85s Skip Intro Pill.
+ *   Autoplay next video (unified), +85s Skip Intro Button, Auto-skip intro, Auto-skip outro,
+ *   and Remember display brightness (`Off`, `Across all videos`, `Per video`).
  */
 @Composable
 fun PlayerSettingsScreen(
@@ -100,13 +102,16 @@ fun PlayerSettingsScreen(
     onUpdateResumePlaybackMode: (ResumePlaybackMode) -> Unit,
     onUpdateBackgroundAudioOrPip: (Boolean) -> Unit,
     onUpdateAutoPlayNextEpisode: (Boolean) -> Unit,
-    onUpdateShowSkipIntro: (Boolean) -> Unit,
+    onUpdateAutoSkipIntro: (Boolean) -> Unit = {},
+    onUpdateAutoSkipOutro: (Boolean) -> Unit = {},
+    onUpdateBrightnessMemoryMode: (BrightnessMemoryMode) -> Unit = {},
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
 
     val palette = LocalExtendedPalette.current
     var showOrientationDialog by remember { mutableStateOf(false) }
+    var showBrightnessModeDialog by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -191,22 +196,40 @@ fun PlayerSettingsScreen(
                     )
 
                     PsSwitchRow(
+                        icon = Icons.Filled.FastForward,
+                        title = "Auto-skip intro",
+                        subtitle = "Show interactive Skip Intro popup when opening markers are detected",
+                        checked = settings.autoSkipIntro,
+                        onCheckedChange = onUpdateAutoSkipIntro,
+                        testTag = "switch_auto_skip_intro"
+                    )
+
+                    PsSwitchRow(
                         icon = Icons.Filled.SkipNext,
-                        title = "Auto-Play Next Episode",
-                        subtitle = "Automatically play the next video in the folder when playback ends",
+                        title = "Auto-skip outro",
+                        subtitle = "Show interactive Skip Outro popup when ending markers are detected",
+                        checked = settings.autoSkipOutro,
+                        onCheckedChange = onUpdateAutoSkipOutro,
+                        testTag = "switch_auto_skip_outro"
+                    )
+
+                    PsSwitchRow(
+                        icon = Icons.Filled.SkipNext,
+                        title = "Autoplay next video",
+                        subtitle = "Show interactive Next Video popup when current video ends",
                         checked = settings.autoPlayNextEpisode,
                         onCheckedChange = onUpdateAutoPlayNextEpisode,
                         testTag = "switch_autoplay_next_episode"
                     )
 
-                    PsSwitchRow(
-                        icon = Icons.Filled.FastForward,
-                        title = "+85s Skip Intro Button",
-                        subtitle = "Show quick +85s intro skip pill during playback",
-                        checked = settings.showSkipIntroButton,
-                        onCheckedChange = onUpdateShowSkipIntro,
+                    PsActionRow(
+                        icon = Icons.Filled.Brightness6,
+                        title = "Remember display brightness",
+                        subtitle = settings.brightnessMemoryMode.rowSubtitle,
+                        badgeText = settings.brightnessMemoryMode.label,
+                        onClick = { showBrightnessModeDialog = true },
                         showDivider = false,
-                        testTag = "switch_skip_intro_pill"
+                        testTag = "settings_remember_brightness_row"
                     )
                 }
             }
@@ -254,6 +277,138 @@ fun PlayerSettingsScreen(
             },
             onDismiss = { showOrientationDialog = false }
         )
+    }
+
+    if (showBrightnessModeDialog) {
+        BrightnessMemoryModeDialog(
+            selectedMode = settings.brightnessMemoryMode,
+            onSelectMode = { mode ->
+                onUpdateBrightnessMemoryMode(mode)
+                showBrightnessModeDialog = false
+            },
+            onDismiss = { showBrightnessModeDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun BrightnessMemoryModeDialog(
+    selectedMode: BrightnessMemoryMode,
+    onSelectMode: (BrightnessMemoryMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalExtendedPalette.current
+    val isDark = palette.isDark
+    val auraBlue = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB)
+    val containerColor = if (isDark) Color(0xFF111827) else Color(0xFFF8FAFF)
+    val hairlineBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val selectedRowFill = if (isDark) {
+        Color(0xFF60A5FA).copy(alpha = 0.16f)
+    } else {
+        Color(0xFF2563EB).copy(alpha = 0.10f)
+    }
+    val selectedRowBorder = Color(0xFF2563EB).copy(alpha = 0.45f)
+    val cardShape = RoundedCornerShape(24.dp)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .widthIn(max = 380.dp)
+                .fillMaxWidth()
+                .shadow(16.dp, cardShape)
+                .clip(cardShape)
+                .background(containerColor)
+                .border(1.dp, hairlineBorderColor, cardShape)
+                .padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 12.dp)
+                .testTag("brightness_memory_mode_dialog")
+        ) {
+            Text(
+                text = "Remember display brightness",
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                BrightnessMemoryMode.entries.forEach { mode ->
+                    val isSelected = mode == selectedMode
+                    val rowShape = RoundedCornerShape(12.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 46.dp)
+                            .clip(rowShape)
+                            .background(if (isSelected) selectedRowFill else Color.Transparent)
+                            .then(
+                                if (isSelected) {
+                                    Modifier.border(1.dp, selectedRowBorder, rowShape)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .clickable { onSelectMode(mode) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .testTag("brightness_mode_option_${mode.name.lowercase()}")
+                    ) {
+                        CompositionLocalProvider(
+                            LocalMinimumInteractiveComponentSize provides Dp.Unspecified
+                        ) {
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = { onSelectMode(mode) },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = auraBlue,
+                                    unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = mode.label,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 15.sp,
+                                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                            )
+                            Text(
+                                text = mode.description,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.End,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("brightness_mode_cancel_button")
+                ) {
+                    Text(
+                        text = "Cancel",
+                        color = auraBlue,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -378,13 +533,14 @@ private fun PsFrostedSection(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val headerColor = if (isDark) Color(0xFFB7C5E8) else PsSlateHeaderLight
+    val primary = MaterialTheme.colorScheme.primary
+    val headerColor = if (isDark) primary else palette.sectionHeaderBlue
     val cardShape = RoundedCornerShape(16.dp)
-    val cardBg = if (isDark) Color(0xFF161B2E).copy(alpha = 0.80f) else Color.White.copy(alpha = 0.84f)
+    val cardBg = if (isDark) palette.sheetBackground.copy(alpha = 0.84f) else Color.White.copy(alpha = 0.86f)
     val borderBrush = if (isDark) {
-        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), Color(0xFF60A5FA).copy(alpha = 0.14f)))
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), primary.copy(alpha = 0.16f)))
     } else {
-        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.94f), PsPeriwinkleTint.copy(alpha = 0.72f)))
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.94f), palette.outlineBorder.copy(alpha = 0.72f)))
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -402,8 +558,8 @@ private fun PsFrostedSection(
                 .shadow(
                     elevation = 4.dp,
                     shape = cardShape,
-                    ambientColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.28f else 0.06f),
-                    spotColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.28f else 0.08f)
+                    ambientColor = primary.copy(alpha = if (isDark) 0.28f else 0.06f),
+                    spotColor = primary.copy(alpha = if (isDark) 0.28f else 0.08f)
                 )
                 .clip(cardShape)
                 .background(cardBg)
@@ -417,17 +573,19 @@ private fun PsFrostedSection(
 @Composable
 private fun PsIconBadge(icon: ImageVector) {
     val isDark = LocalExtendedPalette.current.isDark
+    val primary = MaterialTheme.colorScheme.primary
+    val containerBg = if (isDark) primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.primaryContainer
     Box(
         modifier = Modifier
             .size(32.dp)
             .clip(RoundedCornerShape(9.dp))
-            .background(if (isDark) PsCobaltActive.copy(alpha = 0.18f) else PsIconBgLight),
+            .background(containerBg),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (isDark) Color(0xFF60A5FA) else PsCobaltActive,
+            tint = primary,
             modifier = Modifier.size(18.dp)
         )
     }
@@ -440,11 +598,15 @@ private fun PsActionRow(
     badgeText: String,
     onClick: () -> Unit,
     testTag: String,
+    subtitle: String? = null,
     showDivider: Boolean = true
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else PsDividerLight
+    val primary = MaterialTheme.colorScheme.primary
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else palette.outlineBorder.copy(alpha = 0.72f)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -458,25 +620,36 @@ private fun PsActionRow(
         ) {
             PsIconBadge(icon = icon)
             Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = title,
-                color = palette.primaryText,
-                fontSize = 14.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = palette.primaryText,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        color = palette.secondaryText,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(if (isDark) PsCobaltActive.copy(alpha = 0.25f) else PsIconBgLight)
+                    .background(if (isDark) primary.copy(alpha = 0.22f) else primaryContainer)
                     .padding(horizontal = 9.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = badgeText,
-                    color = if (isDark) Color(0xFFBFDBFE) else PsCobaltActive,
+                    color = if (isDark) Color(0xFFDBEAFE) else onPrimaryContainer,
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -511,9 +684,11 @@ private fun PsInlineChoiceRow(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else PsDividerLight
+    val primary = MaterialTheme.colorScheme.primary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else palette.outlineBorder.copy(alpha = 0.72f)
     val inactiveBg = if (isDark) Color.White.copy(alpha = 0.08f) else Color(0xFFF1F4FC)
-    val inactiveBorder = if (isDark) Color.White.copy(alpha = 0.12f) else PsDividerLight
+    val inactiveBorder = if (isDark) Color.White.copy(alpha = 0.12f) else palette.outlineBorder.copy(alpha = 0.72f)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -545,10 +720,10 @@ private fun PsInlineChoiceRow(
                     Box(
                         modifier = Modifier
                             .clip(chipShape)
-                            .background(if (isSelected) PsCobaltActive else inactiveBg)
+                            .background(if (isSelected) primary else inactiveBg)
                             .border(
                                 width = 1.dp,
-                                color = if (isSelected) PsPeriwinkleTint.copy(alpha = 0.7f) else inactiveBorder,
+                                color = if (isSelected) primary.copy(alpha = 0.75f) else inactiveBorder,
                                 shape = chipShape
                             )
                             .clickable { onSelectIndex(idx) }
@@ -561,7 +736,7 @@ private fun PsInlineChoiceRow(
                     ) {
                         Text(
                             text = label,
-                            color = if (isSelected) Color.White else palette.primaryText.copy(alpha = 0.86f),
+                            color = if (isSelected) onPrimary else palette.primaryText.copy(alpha = 0.86f),
                             fontSize = 11.5.sp,
                             maxLines = 1,
                             softWrap = false,
@@ -593,9 +768,11 @@ private fun PsCompactChoiceRow(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else PsDividerLight
+    val primary = MaterialTheme.colorScheme.primary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else palette.outlineBorder.copy(alpha = 0.72f)
     val inactiveBg = if (isDark) Color.White.copy(alpha = 0.08f) else Color(0xFFF1F4FC)
-    val inactiveBorder = if (isDark) Color.White.copy(alpha = 0.12f) else PsDividerLight
+    val inactiveBorder = if (isDark) Color.White.copy(alpha = 0.12f) else palette.outlineBorder.copy(alpha = 0.72f)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -630,10 +807,10 @@ private fun PsCompactChoiceRow(
                     Box(
                         modifier = Modifier
                             .clip(chipShape)
-                            .background(if (isSelected) PsCobaltActive else inactiveBg)
+                            .background(if (isSelected) primary else inactiveBg)
                             .border(
                                 width = 1.dp,
-                                color = if (isSelected) PsPeriwinkleTint.copy(alpha = 0.7f) else inactiveBorder,
+                                color = if (isSelected) primary.copy(alpha = 0.75f) else inactiveBorder,
                                 shape = chipShape
                             )
                             .clickable { onSelectIndex(idx) }
@@ -646,7 +823,7 @@ private fun PsCompactChoiceRow(
                     ) {
                         Text(
                             text = label,
-                            color = if (isSelected) Color.White else palette.primaryText.copy(alpha = 0.86f),
+                            color = if (isSelected) onPrimary else palette.primaryText.copy(alpha = 0.86f),
                             fontSize = 11.5.sp,
                             maxLines = 1,
                             softWrap = false,
@@ -678,7 +855,9 @@ private fun PsSwitchRow(
 ) {
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
-    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else PsDividerLight
+    val primary = MaterialTheme.colorScheme.primary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val dividerColor = if (isDark) Color.White.copy(alpha = 0.08f) else palette.outlineBorder.copy(alpha = 0.72f)
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -716,8 +895,8 @@ private fun PsSwitchRow(
                     onCheckedChange = onCheckedChange,
                     modifier = Modifier.scale(0.86f),
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = PsCobaltActive,
+                        checkedThumbColor = onPrimary,
+                        checkedTrackColor = primary,
                         checkedBorderColor = Color.Transparent,
                         uncheckedThumbColor = Color.White,
                         uncheckedTrackColor = if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1),

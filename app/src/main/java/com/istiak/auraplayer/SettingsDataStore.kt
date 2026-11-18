@@ -1,6 +1,7 @@
 package com.istiak.auraplayer
 
 import android.content.Context
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -11,6 +12,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.istiak.auraplayer.ui.theme.AppThemePalette
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -53,6 +55,37 @@ enum class ResumePlaybackMode(val label: String) {
                 false -> START_OVER
                 null -> RESUME
             }
+        }
+    }
+}
+
+enum class BrightnessMemoryMode(
+    val label: String,
+    val rowSubtitle: String,
+    val description: String
+) {
+    OFF(
+        label = "Off",
+        rowSubtitle = "Off (Use system brightness)",
+        description = "Always start playback with system brightness"
+    ),
+    ALL_VIDEOS(
+        label = "Across all videos",
+        rowSubtitle = "Across all videos",
+        description = "Restore the last brightness level used in the player"
+    ),
+    PER_VIDEO(
+        label = "Per video",
+        rowSubtitle = "Per video",
+        description = "Save and restore brightness individually for each video"
+    );
+
+    companion object {
+        fun fromStored(value: String?): BrightnessMemoryMode {
+            return entries.firstOrNull {
+                it.name.equals(value, ignoreCase = true) ||
+                    it.label.equals(value, ignoreCase = true)
+            } ?: ALL_VIDEOS
         }
     }
 }
@@ -122,7 +155,12 @@ enum class DisplayField(val label: String, val defaultEnabled: Boolean) {
 
 data class AppSettingsState(
     // Appearance & Library
-    val themeMode: ThemeMode = ThemeMode.LIGHT,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val appThemePalette: AppThemePalette = AppThemePalette.AURORA,
+    val showFullNames: Boolean = false,
+    val showNewVideoLabel: Boolean = true,
+    val newVideoLabelDaysThreshold: Int = 7,
+    val showVideoThumbnails: Boolean = true,
     val showHiddenFolders: Boolean = false,
     val hiddenFolderScanLibrary: Boolean = true,
     val hiddenFolderScanTree: Boolean = true,
@@ -144,7 +182,11 @@ data class AppSettingsState(
     val decoderPriority: DecoderPriority = DecoderPriority.HW_PLUS,
     val backgroundAudioOrPipOnHome: Boolean = false,
     val autoPlayNextEpisode: Boolean = true,
-    val showSkipIntroButton: Boolean = true,
+    val autoSkipIntro: Boolean = true,
+    val autoSkipOutro: Boolean = true,
+    val brightnessMemoryMode: BrightnessMemoryMode = BrightnessMemoryMode.ALL_VIDEOS,
+    val savedGlobalBrightness: Float = -1f,
+    val savedPerVideoBrightnessMap: Map<String, Float> = emptyMap(),
     val doubleTapSeekSeconds: Int = 10,
     val defaultPlaybackSpeed: Float = 1.0f,
 
@@ -199,12 +241,20 @@ data class AppSettingsState(
 ) {
     val defaultResumePlayback: Boolean
         get() = resumePlaybackMode == ResumePlaybackMode.RESUME
+
+    val autoPlayNextVideo: Boolean
+        get() = autoPlayNextEpisode
 }
 
 class SettingsDataStore(private val context: Context) {
 
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
+        val APP_THEME_PALETTE = stringPreferencesKey("app_theme_palette")
+        val SHOW_FULL_NAMES = booleanPreferencesKey("show_full_names")
+        val SHOW_NEW_VIDEO_LABEL = booleanPreferencesKey("show_new_video_label")
+        val NEW_VIDEO_LABEL_DAYS_THRESHOLD = intPreferencesKey("new_video_label_days_threshold")
+        val SHOW_VIDEO_THUMBNAILS = booleanPreferencesKey("show_video_thumbnails")
         val SHOW_HIDDEN_FOLDERS = booleanPreferencesKey("show_hidden_folders")
         val HIDDEN_SCAN_LIBRARY = booleanPreferencesKey("hidden_scan_library")
         val HIDDEN_SCAN_TREE = booleanPreferencesKey("hidden_scan_tree")
@@ -226,7 +276,11 @@ class SettingsDataStore(private val context: Context) {
         val DECODER_PRIORITY = stringPreferencesKey("decoder_priority")
         val BG_AUDIO_OR_PIP = booleanPreferencesKey("bg_audio_or_pip")
         val AUTO_PLAY_NEXT_EPISODE = booleanPreferencesKey("auto_play_next_episode")
-        val SHOW_SKIP_INTRO_BUTTON = booleanPreferencesKey("show_skip_intro_button")
+        val AUTO_SKIP_INTRO = booleanPreferencesKey("auto_skip_intro")
+        val AUTO_SKIP_OUTRO = booleanPreferencesKey("auto_skip_outro")
+        val BRIGHTNESS_MEMORY_MODE = stringPreferencesKey("brightness_memory_mode")
+        val SAVED_GLOBAL_BRIGHTNESS = floatPreferencesKey("saved_global_brightness")
+        val SAVED_PER_VIDEO_BRIGHTNESS_MAP = stringSetPreferencesKey("saved_per_video_brightness_map")
         val DOUBLE_TAP_SEEK_SEC = intPreferencesKey("double_tap_seek_sec")
         val DEFAULT_PLAYBACK_SPEED = floatPreferencesKey("default_playback_speed")
 
@@ -279,7 +333,8 @@ class SettingsDataStore(private val context: Context) {
     val settingsFlow: Flow<AppSettingsState> = context.appDataStore.data.map { prefs ->
         val themeMode = prefs[Keys.THEME_MODE]?.let {
             runCatching { ThemeMode.valueOf(it) }.getOrNull()
-        } ?: ThemeMode.LIGHT
+        } ?: ThemeMode.SYSTEM
+        val appThemePalette = AppThemePalette.fromStored(prefs[Keys.APP_THEME_PALETTE])
 
         val decoderPriority = DecoderPriority.fromStored(prefs[Keys.DECODER_PRIORITY])
         val appDisguiseMode = AppDisguiseMode.fromStored(prefs[Keys.APP_DISGUISE_MODE])
@@ -309,12 +364,21 @@ class SettingsDataStore(private val context: Context) {
 
         val positionsMap = parseLongPairMap(prefs[Keys.PLAYBACK_POSITIONS])
         val cachedDurationsMap = parseLongPairMap(prefs[Keys.CACHED_DURATIONS])
+        val perVideoBrightnessMap = parseUriFloatMap(prefs[Keys.SAVED_PER_VIDEO_BRIGHTNESS_MAP])
+        val brightnessMemoryMode = BrightnessMemoryMode.fromStored(prefs[Keys.BRIGHTNESS_MEMORY_MODE])
+        val rawGlobalBrightness = prefs[Keys.SAVED_GLOBAL_BRIGHTNESS] ?: -1f
+        val savedGlobalBrightness = if (rawGlobalBrightness in 0.01f..1.0f) rawGlobalBrightness else -1f
 
         val storedMarkers = prefs[Keys.MARKER_FILES]
         val markerFiles = if (storedMarkers == null) setOf(".nomedia") else storedMarkers
 
         AppSettingsState(
             themeMode = themeMode,
+            appThemePalette = appThemePalette,
+            showFullNames = prefs[Keys.SHOW_FULL_NAMES] ?: false,
+            showNewVideoLabel = prefs[Keys.SHOW_NEW_VIDEO_LABEL] ?: true,
+            newVideoLabelDaysThreshold = (prefs[Keys.NEW_VIDEO_LABEL_DAYS_THRESHOLD] ?: 7).coerceIn(1, 30),
+            showVideoThumbnails = prefs[Keys.SHOW_VIDEO_THUMBNAILS] ?: true,
             showHiddenFolders = prefs[Keys.SHOW_HIDDEN_FOLDERS] ?: false,
             hiddenFolderScanLibrary = prefs[Keys.HIDDEN_SCAN_LIBRARY] ?: true,
             hiddenFolderScanTree = prefs[Keys.HIDDEN_SCAN_TREE] ?: true,
@@ -338,7 +402,11 @@ class SettingsDataStore(private val context: Context) {
             decoderPriority = decoderPriority,
             backgroundAudioOrPipOnHome = prefs[Keys.BG_AUDIO_OR_PIP] ?: false,
             autoPlayNextEpisode = prefs[Keys.AUTO_PLAY_NEXT_EPISODE] ?: true,
-            showSkipIntroButton = prefs[Keys.SHOW_SKIP_INTRO_BUTTON] ?: true,
+            autoSkipIntro = prefs[Keys.AUTO_SKIP_INTRO] ?: true,
+            autoSkipOutro = prefs[Keys.AUTO_SKIP_OUTRO] ?: true,
+            brightnessMemoryMode = brightnessMemoryMode,
+            savedGlobalBrightness = savedGlobalBrightness,
+            savedPerVideoBrightnessMap = perVideoBrightnessMap,
             doubleTapSeekSeconds = prefs[Keys.DOUBLE_TAP_SEEK_SEC] ?: 10,
             defaultPlaybackSpeed = prefs[Keys.DEFAULT_PLAYBACK_SPEED] ?: 1.0f,
             hapticFeedbackEnabled = prefs[Keys.HAPTIC_FEEDBACK] ?: true,
@@ -400,8 +468,43 @@ class SettingsDataStore(private val context: Context) {
         return map
     }
 
+    private fun parseUriFloatMap(entries: Set<String>?): Map<String, Float> {
+        val map = mutableMapOf<String, Float>()
+        entries?.forEach { entry ->
+            val sepIdx = entry.lastIndexOf('=')
+            if (sepIdx > 0 && sepIdx < entry.lastIndex) {
+                val decodedKey = Uri.decode(entry.substring(0, sepIdx))
+                val value = entry.substring(sepIdx + 1).toFloatOrNull()
+                if (decodedKey.isNotEmpty() && value != null && value in 0.01f..1.0f) {
+                    map[decodedKey] = value
+                }
+            }
+        }
+        return map
+    }
+
     suspend fun setThemeMode(mode: ThemeMode) {
         context.appDataStore.edit { it[Keys.THEME_MODE] = mode.name }
+    }
+
+    suspend fun setAppThemePalette(palette: AppThemePalette) {
+        context.appDataStore.edit { it[Keys.APP_THEME_PALETTE] = palette.name }
+    }
+
+    suspend fun setShowFullNames(enabled: Boolean) {
+        context.appDataStore.edit { it[Keys.SHOW_FULL_NAMES] = enabled }
+    }
+
+    suspend fun setShowNewVideoLabel(enabled: Boolean) {
+        context.appDataStore.edit { it[Keys.SHOW_NEW_VIDEO_LABEL] = enabled }
+    }
+
+    suspend fun setNewVideoLabelDaysThreshold(days: Int) {
+        context.appDataStore.edit { it[Keys.NEW_VIDEO_LABEL_DAYS_THRESHOLD] = days.coerceIn(1, 30) }
+    }
+
+    suspend fun setShowVideoThumbnails(enabled: Boolean) {
+        context.appDataStore.edit { it[Keys.SHOW_VIDEO_THUMBNAILS] = enabled }
     }
 
     suspend fun setShowHiddenFolders(show: Boolean) {
@@ -484,8 +587,38 @@ class SettingsDataStore(private val context: Context) {
         context.appDataStore.edit { it[Keys.AUTO_PLAY_NEXT_EPISODE] = enabled }
     }
 
-    suspend fun setShowSkipIntroButton(enabled: Boolean) {
-        context.appDataStore.edit { it[Keys.SHOW_SKIP_INTRO_BUTTON] = enabled }
+    suspend fun setAutoSkipIntro(enabled: Boolean) {
+        context.appDataStore.edit { it[Keys.AUTO_SKIP_INTRO] = enabled }
+    }
+
+    suspend fun setAutoSkipOutro(enabled: Boolean) {
+        context.appDataStore.edit { it[Keys.AUTO_SKIP_OUTRO] = enabled }
+    }
+
+    suspend fun setBrightnessMemoryMode(mode: BrightnessMemoryMode) {
+        context.appDataStore.edit { it[Keys.BRIGHTNESS_MEMORY_MODE] = mode.name }
+    }
+
+    suspend fun savePlayerBrightness(videoKey: String, brightness: Float) {
+        val clamped = brightness.coerceIn(0.01f, 1.0f)
+        context.appDataStore.edit { prefs ->
+            val mode = BrightnessMemoryMode.fromStored(prefs[Keys.BRIGHTNESS_MEMORY_MODE])
+            when (mode) {
+                BrightnessMemoryMode.OFF -> Unit
+                BrightnessMemoryMode.ALL_VIDEOS -> {
+                    prefs[Keys.SAVED_GLOBAL_BRIGHTNESS] = clamped
+                }
+                BrightnessMemoryMode.PER_VIDEO -> {
+                    if (videoKey.isNotBlank()) {
+                        val currentMap = parseUriFloatMap(prefs[Keys.SAVED_PER_VIDEO_BRIGHTNESS_MAP]).toMutableMap()
+                        currentMap[videoKey] = clamped
+                        prefs[Keys.SAVED_PER_VIDEO_BRIGHTNESS_MAP] = currentMap.entries
+                            .map { (k, v) -> "${Uri.encode(k)}=$v" }
+                            .toSet()
+                    }
+                }
+            }
+        }
     }
 
     suspend fun setDoubleTapSeekSeconds(seconds: Int) {

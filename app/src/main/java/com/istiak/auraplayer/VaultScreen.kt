@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,11 +27,10 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -83,7 +83,10 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.istiak.auraplayer.ui.components.FrostedGlassSurface
+import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.crystalOuterShadow
+import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
+import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.DangerRed
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import java.io.File
@@ -161,186 +164,32 @@ fun VaultScreen(
         }
     }
 
+    val listState = rememberLazyListState()
+    val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val scrollLayout = rememberScrollAwareGlassLayout(
+        listState = listState,
+        defaultHeaderHeight = 64.dp,
+        extraTopGap = 4.dp,
+        bottomPadding = navBottomDp + 104.dp
+    )
+
     PastelMeshBackground(
         modifier = modifier
             .fillMaxSize()
             .testTag("vault_screen")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.statusBars)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-            ) {
-            // Top App Bar
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 6.dp, end = 8.dp, top = 10.dp, bottom = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("vault_back_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = palette.brandTitleColor
-                        )
-                    }
-                    Text(
-                        text = "Private Vault",
-                        fontSize = 23.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.brandTitleColor
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isUnlocked) {
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = palette.periwinkleBadgeBg,
-                            modifier = Modifier
-                                .clickable { onLockVault() }
-                                .testTag("lock_vault_button")
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Lock,
-                                    contentDescription = "Lock Vault",
-                                    tint = palette.periwinkleBadgeText,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Lock",
-                                    color = palette.periwinkleBadgeText,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-
-                    IconButton(
-                        onClick = onOpenSettings,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("vault_settings_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Settings,
-                            contentDescription = "Settings",
-                            tint = palette.brandTitleColor
-                        )
-                    }
-
-                    Box {
-                        IconButton(
-                            onClick = { showVaultOverflowMenu = true },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("vault_more_menu_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.MoreVert,
-                                contentDescription = "More Vault Options",
-                                tint = palette.brandTitleColor
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showVaultOverflowMenu,
-                            onDismissRequest = { showVaultOverflowMenu = false },
-                            containerColor = palette.sheetBackground
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "Private Folder Settings",
-                                        color = palette.primaryText,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.Security,
-                                        contentDescription = null,
-                                        tint = palette.brandTitleColor
-                                    )
-                                },
-                                onClick = {
-                                    showVaultOverflowMenu = false
-                                    onOpenPrivateFolderSettings()
-                                },
-                                modifier = Modifier.testTag("vault_menu_private_folder_settings")
-                            )
-                            if (isSecureFolderSettingsHidden) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = "Unhide Secure Folder Settings",
-                                            color = palette.primaryText,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Filled.Visibility,
-                                            contentDescription = null,
-                                            tint = palette.brandTitleColor
-                                        )
-                                    },
-                                    onClick = {
-                                        showVaultOverflowMenu = false
-                                        onUnhideSecureFolderSettings()
-                                    },
-                                    modifier = Modifier.testTag("vault_menu_unhide_secure_settings")
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "Settings",
-                                        color = palette.primaryText,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.Settings,
-                                        contentDescription = null,
-                                        tint = palette.secondaryText
-                                    )
-                                },
-                                onClick = {
-                                    showVaultOverflowMenu = false
-                                    onOpenSettings()
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
             if (!isUnlocked) {
                 // Biometric / Device Credential Authentication Gate
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 24.dp, vertical = 20.dp)
-                        .padding(bottom = 80.dp),
+                        .fillMaxSize()
+                        .padding(
+                            start = 24.dp,
+                            end = 24.dp,
+                            top = scrollLayout.measuredHeaderHeightDp + 16.dp,
+                            bottom = navBottomDp + 80.dp
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Surface(
@@ -445,81 +294,253 @@ fun VaultScreen(
                         }
                     }
                 }
-            } else {
-                // Unlocked Vault Video List
-                if (resolvedVaultVideos.isEmpty()) {
-                    Box(
+            } else if (resolvedVaultVideos.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(
+                            start = 28.dp,
+                            end = 28.dp,
+                            top = scrollLayout.measuredHeaderHeightDp,
+                            bottom = navBottomDp + 80.dp
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(horizontal = 28.dp)
-                            .padding(bottom = 80.dp),
-                        contentAlignment = Alignment.Center
+                            .clip(RoundedCornerShape(24.dp))
+                            .clickable { showImportPickerSheet = true }
+                            .padding(horizontal = 20.dp, vertical = 22.dp)
+                            .testTag("vault_empty_import_card")
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(24.dp))
-                                .clickable { showImportPickerSheet = true }
-                                .padding(horizontal = 20.dp, vertical = 22.dp)
-                                .testTag("vault_empty_import_card")
+                                .size(68.dp)
+                                .clip(CircleShape)
+                                .background(palette.periwinkleBadgeBg),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(68.dp)
-                                    .clip(CircleShape)
-                                    .background(palette.periwinkleBadgeBg),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Shield,
-                                    contentDescription = "Tap to import videos into Private Vault",
-                                    tint = palette.periwinkleBadgeText,
-                                    modifier = Modifier.size(34.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Text(
-                                text = "No Hidden Videos",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = palette.primaryText
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "Tap the + button below or long-press any video in your folders and choose \"Move to Private Vault\" to lock it instantly.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = palette.secondaryText,
-                                textAlign = TextAlign.Center
+                            Icon(
+                                imageVector = Icons.Filled.Shield,
+                                contentDescription = "Tap to import videos into Private Vault",
+                                tint = palette.periwinkleBadgeText,
+                                modifier = Modifier.size(34.dp)
                             )
                         }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "No Hidden Videos",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = palette.primaryText
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Tap the + button below or long-press any video in your folders and choose \"Move to Private Vault\" to lock it instantly.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.secondaryText,
+                            textAlign = TextAlign.Center
+                        )
                     }
-                } else {
-                    LazyColumn(
-                        contentPadding = PaddingValues(top = 6.dp, bottom = 110.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .testTag("vault_videos_list")
-                    ) {
-                        items(resolvedVaultVideos, key = { it.id }) { vaultVideo ->
-                            VaultVideoRowItem(
-                                video = vaultVideo,
-                                imageLoader = imageLoader,
-                                onPlay = {
-                                    val directUri = vaultVideo.vaultFilePath
-                                        ?.let { Uri.fromFile(File(it)) }
-                                        ?: vaultVideo.uri
-                                    val playable = vaultVideo.copy(uri = directUri)
-                                    onPlayVaultVideo(playable, resolvedVaultVideos)
-                                },
-                                onRestore = { onRestoreToGallery(vaultVideo) },
-                                onDelete = { onDeletePermanently(vaultVideo) }
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    contentPadding = scrollLayout.contentPadding,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .recordFrostedBackdrop(
+                            backdropState = scrollLayout.backdropState,
+                            scrollableState = listState,
+                            contentLayerOverride = scrollLayout.contentGraphicsLayer
+                        )
+                        .testTag("vault_videos_list")
+                ) {
+                    items(resolvedVaultVideos, key = { it.id }) { vaultVideo ->
+                        VaultVideoRowItem(
+                            video = vaultVideo,
+                            imageLoader = imageLoader,
+                            onPlay = {
+                                val directUri = vaultVideo.vaultFilePath
+                                    ?.let { Uri.fromFile(File(it)) }
+                                    ?: vaultVideo.uri
+                                val playable = vaultVideo.copy(uri = directUri)
+                                onPlayVaultVideo(playable, resolvedVaultVideos)
+                            },
+                            onRestore = { onRestoreToGallery(vaultVideo) },
+                            onDelete = { onDeletePermanently(vaultVideo) }
+                        )
+                    }
+                }
+            }
+
+            // Scroll-aware, bottom-feathered Liquid Glass Top App Bar
+            ScrollAwareFixedHeader(
+                layoutState = scrollLayout,
+                blurRadius = 18.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 6.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("vault_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = palette.brandTitleColor
                             )
+                        }
+                        Text(
+                            text = "Private Vault",
+                            fontSize = 23.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.brandTitleColor
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isUnlocked) {
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = palette.periwinkleBadgeBg,
+                                modifier = Modifier
+                                    .clickable { onLockVault() }
+                                    .testTag("lock_vault_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Lock,
+                                        contentDescription = "Lock Vault",
+                                        tint = palette.periwinkleBadgeText,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Lock",
+                                        color = palette.periwinkleBadgeText,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+
+                        IconButton(
+                            onClick = onOpenSettings,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("vault_settings_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Settings,
+                                contentDescription = "Settings",
+                                tint = palette.brandTitleColor
+                            )
+                        }
+
+                        Box {
+                            IconButton(
+                                onClick = { showVaultOverflowMenu = true },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("vault_more_menu_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.MoreVert,
+                                    contentDescription = "More Vault Options",
+                                    tint = palette.brandTitleColor
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showVaultOverflowMenu,
+                                onDismissRequest = { showVaultOverflowMenu = false },
+                                containerColor = palette.sheetBackground
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Private Folder Settings",
+                                            color = palette.primaryText,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Filled.Security,
+                                            contentDescription = null,
+                                            tint = palette.brandTitleColor
+                                        )
+                                    },
+                                    onClick = {
+                                        showVaultOverflowMenu = false
+                                        onOpenPrivateFolderSettings()
+                                    },
+                                    modifier = Modifier.testTag("vault_menu_private_folder_settings")
+                                )
+                                if (isSecureFolderSettingsHidden) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Unhide Secure Folder Settings",
+                                                color = palette.primaryText,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Filled.Visibility,
+                                                contentDescription = null,
+                                                tint = palette.brandTitleColor
+                                            )
+                                        },
+                                        onClick = {
+                                            showVaultOverflowMenu = false
+                                            onUnhideSecureFolderSettings()
+                                        },
+                                        modifier = Modifier.testTag("vault_menu_unhide_secure_settings")
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Settings",
+                                            color = palette.primaryText,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Filled.Settings,
+                                            contentDescription = null,
+                                            tint = palette.secondaryText
+                                        )
+                                    },
+                                    onClick = {
+                                        showVaultOverflowMenu = false
+                                        onOpenSettings()
+                                    }
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
         if (isUnlocked) {
             val fabInteractionSource = remember { MutableInteractionSource() }

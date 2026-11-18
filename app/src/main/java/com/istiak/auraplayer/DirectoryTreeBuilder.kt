@@ -25,6 +25,25 @@ data class DirectoryNode(
         return allRecursiveVideos.count { it.isConsideredNew(watchedVideoIds, seenBaselineEpochSec) }
     }
 
+    fun unwatchedVideoCount(
+        watchedVideoIds: Set<Long>,
+        seenBaselineEpochSec: Long,
+        showNewLabel: Boolean,
+        newLabelDaysThreshold: Int,
+        referenceTimeMs: Long = System.currentTimeMillis()
+    ): Int {
+        if (!showNewLabel) return 0
+        return allRecursiveVideos.count {
+            it.isConsideredNew(
+                watchedVideoIds = watchedVideoIds,
+                seenBaselineEpochSec = seenBaselineEpochSec,
+                showNewLabel = true,
+                newLabelDaysThreshold = newLabelDaysThreshold,
+                referenceTimeMs = referenceTimeMs
+            )
+        }
+    }
+
     /**
      * Summary line showing immediate subfolder count + direct video count + total recursive size
      * (e.g. "4 videos, 1 folder  54 GB" or "12 folders  25 GB").
@@ -204,7 +223,9 @@ object DirectoryTreeBuilder {
 
     fun getParentPath(path: String): String {
         val clean = path.trim('/')
-        return if ('/' in clean) clean.substringBeforeLast('/') else ""
+        if (clean.isEmpty()) return ""
+        val segments = clean.split('/').filter { it.isNotBlank() }
+        return if (segments.size > 1) segments.dropLast(1).joinToString("/") else ""
     }
 
     private fun sortFolders(

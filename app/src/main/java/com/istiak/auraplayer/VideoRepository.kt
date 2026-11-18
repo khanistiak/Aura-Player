@@ -22,6 +22,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
@@ -74,6 +75,25 @@ data class VideoItem(
             normalizeEpochSeconds(dateModifiedSec)
         )
         return latestTimestampSec > seenBaselineEpochSec
+    }
+
+    fun isConsideredNew(
+        watchedVideoIds: Set<Long>,
+        seenBaselineEpochSec: Long,
+        showNewLabel: Boolean,
+        newLabelDaysThreshold: Int,
+        referenceTimeMs: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (!showNewLabel) return false
+        if (!isConsideredNew(watchedVideoIds, seenBaselineEpochSec)) return false
+        val latestTimestampSec = maxOf(
+            normalizeEpochSeconds(dateAddedSec),
+            normalizeEpochSeconds(dateModifiedSec)
+        )
+        if (latestTimestampSec <= 0L) return false
+        val thresholdMs = TimeUnit.DAYS.toMillis(newLabelDaysThreshold.coerceIn(1, 30).toLong())
+        val itemTimestampMs = latestTimestampSec * 1000L
+        return itemTimestampMs >= (referenceTimeMs - thresholdMs)
     }
 
     val resolutionTag: String

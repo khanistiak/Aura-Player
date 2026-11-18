@@ -20,18 +20,18 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -64,6 +64,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
+import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
+import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import com.istiak.auraplayer.ui.theme.MxBlueAccent
 
@@ -573,92 +576,32 @@ fun CodecDiagnosticsScreen(
         "$modelText • Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
     }
 
-    Column(
+    val listState = rememberLazyListState()
+    val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val scrollLayout = rememberScrollAwareGlassLayout(
+        listState = listState,
+        defaultHeaderHeight = 64.dp,
+        extraTopGap = 6.dp,
+        bottomPadding = navBottomDp + 24.dp,
+        horizontalPadding = 16.dp
+    )
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .windowInsetsPadding(WindowInsets.navigationBars)
             .testTag("codec_diagnostics_screen")
     ) {
-        // Header
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 6.dp, end = 10.dp, top = 8.dp, bottom = 6.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("codec_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = palette.brandTitleColor
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Supported Codecs",
-                        fontSize = 21.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.primaryText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = deviceModelLabel,
-                        fontSize = 12.sp,
-                        color = palette.secondaryText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            IconButton(
-                onClick = {
-                    val report = buildString {
-                        appendLine("Aura Player Supported Codecs ($deviceModelLabel)")
-                        appendLine("$hwCount Hardware • $swCount Software Decoders ($videoCount Video, $audioCount Audio)")
-                        appendLine("---")
-                        allCodecs.forEach { c ->
-                            val hwTag = if (c.isHardwareAccelerated) "HW" else "SW"
-                            val kind = if (c.isVideo) "VIDEO" else "AUDIO"
-                            val limit = if (c.isVideo) "${c.maxResolutionLabel} @ ${c.maxFpsLabel}" else c.bitrateRangeLabel
-                            appendLine("${c.displayTitle} [$kind/$hwTag] ${c.codecName} -> ${c.mimeTypes.joinToString()} ($limit)")
-                        }
-                    }
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Supported Codecs", report))
-                    onShowMessage("Copied ${allCodecs.size} decoder specs to clipboard")
-                },
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("copy_diagnostics_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ContentCopy,
-                    contentDescription = "Copy Diagnostics",
-                    tint = palette.brandTitleColor,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-
         LazyColumn(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            state = listState,
+            contentPadding = scrollLayout.contentPadding,
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
+                .fillMaxSize()
+                .recordFrostedBackdrop(
+                    backdropState = scrollLayout.backdropState,
+                    scrollableState = listState,
+                    contentLayerOverride = scrollLayout.contentGraphicsLayer
+                )
                 .testTag("codec_list")
         ) {
             // 1. Summary Card ("Hardware vs. Software Decoding")
@@ -964,6 +907,86 @@ fun CodecDiagnosticsScreen(
                         }
                     }
                 )
+            }
+        }
+
+        ScrollAwareFixedHeader(
+            layoutState = scrollLayout,
+            blurRadius = 18.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp, end = 10.dp, top = 8.dp, bottom = 8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("codec_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = palette.brandTitleColor
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Supported Codecs",
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.primaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = deviceModelLabel,
+                            fontSize = 12.sp,
+                            color = palette.secondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = {
+                        val report = buildString {
+                            appendLine("Aura Player Supported Codecs ($deviceModelLabel)")
+                            appendLine("$hwCount Hardware • $swCount Software Decoders ($videoCount Video, $audioCount Audio)")
+                            appendLine("---")
+                            allCodecs.forEach { c ->
+                                val hwTag = if (c.isHardwareAccelerated) "HW" else "SW"
+                                val kind = if (c.isVideo) "VIDEO" else "AUDIO"
+                                val limit = if (c.isVideo) "${c.maxResolutionLabel} @ ${c.maxFpsLabel}" else c.bitrateRangeLabel
+                                appendLine("${c.displayTitle} [$kind/$hwTag] ${c.codecName} -> ${c.mimeTypes.joinToString()} ($limit)")
+                            }
+                        }
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Supported Codecs", report))
+                        onShowMessage("Copied ${allCodecs.size} decoder specs to clipboard")
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("copy_diagnostics_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = "Copy Diagnostics",
+                        tint = palette.brandTitleColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
