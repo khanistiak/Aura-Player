@@ -713,19 +713,19 @@ class ExampleRobolectricTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val manager = AppUpdateManager(context)
-        assertEquals("2.6.2", manager.getInstalledVersionName(context))
+        assertEquals("2.6.3", manager.getInstalledVersionName(context))
 
-        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.2"))
-        assertTrue(AppUpdateManager.isNewerVersion("v2.6.3", "2.6.2"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.2", "2.6.2"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.2-rc1", "2.6.2"))
+        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.3"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.4", "2.6.3"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.3", "2.6.3"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.3-rc1", "2.6.3"))
         assertFalse(AppUpdateManager.isNewerVersion("v2.6", "2.6.0"))
-        assertFalse(AppUpdateManager.isNewerVersion("2.6.1", "2.6.2"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.6.2", "2.6.3"))
 
-        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.2", ""))
-        assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.2", "v2.7.0"))
-        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.1", "2.6.2", "v2.7.0"))
-        assertFalse(AppUpdateManager.shouldPromptRelease("v2.6.2", "2.6.2", ""))
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.3", ""))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.3", "v2.7.0"))
+        assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.1", "2.6.3", "v2.7.0"))
+        assertFalse(AppUpdateManager.shouldPromptRelease("v2.6.3", "2.6.3", ""))
 
         val sampleJson = """
             {

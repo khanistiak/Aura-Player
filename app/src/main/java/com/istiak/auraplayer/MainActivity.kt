@@ -33,8 +33,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -67,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -1784,6 +1788,23 @@ fun AuraPlayerApp(
                             BackHandler(enabled = selectedVideoIds.isNotEmpty()) {
                                 selectedVideoIds = emptySet()
                             }
+
+                            // Ultra-soft bottom ambient edge scrim behind the floating pill & Play FAB
+                            val navBarBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .height(navBarBottomPadding + 28.dp)
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                MaterialTheme.colorScheme.background.copy(alpha = 0.72f)
+                                            )
+                                        )
+                                    )
+                            )
 
                             // Swap bottom bar: FloatingSelectionActionDock during multi-select, else LiquidGlassBottomNavPill
                             if (selectedVideoIds.isNotEmpty()) {
