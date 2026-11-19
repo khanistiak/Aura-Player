@@ -1,5 +1,6 @@
 package com.istiak.auraplayer
 
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -69,7 +70,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -88,7 +88,6 @@ import com.istiak.auraplayer.ui.components.FrostedGlassSurface
 import com.istiak.auraplayer.ui.components.LocalFrostedBackdropState
 import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.ScrollAwareGlassLayoutState
-import com.istiak.auraplayer.ui.components.crystalOuterShadow
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import com.istiak.auraplayer.ui.theme.MxBlueAccent
 import kotlinx.coroutines.delay
@@ -768,13 +767,18 @@ fun LiquidGlassTopHeader(
 }
 
 /**
- * Elevated Liquid Crystal Floating Bottom Navigation Capsule (`Home` | `All Videos`) + inline
+ * Liquid Glass Floating Bottom Navigation Capsule (`Home` | `All Videos`) + inline
  * Circular Quick-Resume Play Button (`56.dp`):
- * - Driven by the exact same [FrostedGlassSurface] optical pipeline (`blurRadius = 28.dp`, `glassProgressOverride = 1f`)
- *   and [LocalLiquidGlassConfig] as the top header and live preview card.
- * - When `config.enabled == false`: renders a clean standard frosted Material capsule
- *   (`MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)` with `14.dp` blur and hairline
- *   `outlineVariant.copy(alpha = 0.35f)` border) and a solid `MaterialTheme.colorScheme.primary` Play circle.
+ * - Driven by the exact same [FrostedGlassSurface] live backdrop sampling & `RenderEffect` blur
+ *   pipeline (`blurRadius = 28.dp`, `glassProgressOverride = 1f`) and [LocalLiquidGlassConfig] as
+ *   the home screen tabs capsule and live preview card, with smooth translucent fallback on API < 31.
+ * - Uses theme-aware frosted tint (`Color.White.copy(alpha = 0.72f)` in Light mode,
+ *   `Color(0xFF141824).copy(alpha = 0.74f)` in Dark mode) scaled dynamically by the user's Liquid
+ *   Glass intensity settings (`frostPercent` & `backdropOpacity`).
+ * - Applies a multi-stop vertical specular rim (`1.15.dp`) and curved inner gloss gradient with
+ *   zero harsh dark drop shadow (`shadowElevation = 0.dp`).
+ * - Slides the inner Aura Blue / frosted crystal active-tab capsule underlay fluidly between tabs
+ *   with `spring(dampingRatio = 0.78f, stiffness = 380f)`.
  */
 @Composable
 fun LiquidGlassBottomNavPill(
@@ -789,39 +793,103 @@ fun LiquidGlassBottomNavPill(
     val isDark = palette.isDark
     val primaryAccent = MaterialTheme.colorScheme.primary
     val frostNorm = glassConfig.frostPercent.coerceIn(0f, 1f)
+    val isRenderEffectSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
     val capsuleShape = CircleShape
-    val liquidCrystalBorder = if (isDark) {
-        Brush.linearGradient(
-            listOf(
-                Color.White.copy(alpha = 0.28f),
-                Color.White.copy(alpha = 0.18f),
-                Color.White.copy(alpha = 0.10f)
-            )
-        )
+
+    // Theme-aware frosted fill scaled dynamically by Liquid Glass frost intensity
+    // (FrostedGlassSurface also multiplies by glassConfig.backdropOpacity).
+    val frostIntensityScale = if (isRenderEffectSupported) {
+        (0.55f + 0.45f * frostNorm).coerceIn(0.35f, 1.0f)
     } else {
-        Brush.linearGradient(
-            listOf(
-                Color.White.copy(alpha = 0.95f),
-                Color(0xFF94A3B8).copy(alpha = 0.35f),
-                primaryAccent.copy(alpha = 0.30f)
-            )
-        )
+        1.0f
     }
-    val pillOuterShadowColor = if (isDark) {
-        Color.Black.copy(alpha = 0.45f)
+    val frostedCapsuleTint = if (glassConfig.enabled) {
+        if (isDark) {
+            Color(0xFF141824).copy(alpha = (0.74f * frostIntensityScale).coerceIn(0.24f, 0.74f))
+        } else {
+            Color.White.copy(alpha = (0.72f * frostIntensityScale).coerceIn(0.22f, 0.72f))
+        }
     } else {
-        Color(0x280F172A)
+        null
     }
-    val activePillBg = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.26f else 0.16f)
-    val activePillBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+
+    // Multi-stop vertical specular rim catching top light and soft bottom crystal refraction.
+    val liquidCrystalBorder = remember(isDark) {
+        if (isDark) {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.28f),
+                0.45f to Color.White.copy(alpha = 0.10f),
+                0.82f to Color(0xFF64B5F6).copy(alpha = 0.12f),
+                1.0f to Color(0xFF64B5F6).copy(alpha = 0.16f)
+            )
+        } else {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.65f),
+                0.45f to Color.White.copy(alpha = 0.28f),
+                0.82f to Color(0xFF64B5F6).copy(alpha = 0.16f),
+                1.0f to Color.White.copy(alpha = 0.18f)
+            )
+        }
+    }
+
+    // Curved inner top-to-bottom crystal gloss gradient inside the capsule.
+    val innerCapsuleGloss = remember(isDark) {
+        if (isDark) {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.16f),
+                0.38f to Color.White.copy(alpha = 0.04f),
+                0.76f to Color.Transparent,
+                1.0f to Color(0xFF64B5F6).copy(alpha = 0.10f)
+            )
+        } else {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.46f),
+                0.38f to Color.White.copy(alpha = 0.12f),
+                0.76f to Color.Transparent,
+                1.0f to Color(0xFF64B5F6).copy(alpha = 0.10f)
+            )
+        }
+    }
+
+    val activePillBrush = remember(primaryAccent, isDark) {
+        if (isDark) {
+            Brush.verticalGradient(
+                0.0f to primaryAccent.copy(alpha = 0.34f),
+                0.55f to primaryAccent.copy(alpha = 0.22f),
+                1.0f to primaryAccent.copy(alpha = 0.28f)
+            )
+        } else {
+            Brush.verticalGradient(
+                0.0f to primaryAccent.copy(alpha = 0.20f),
+                0.55f to primaryAccent.copy(alpha = 0.13f),
+                1.0f to primaryAccent.copy(alpha = 0.18f)
+            )
+        }
+    }
+    val activePillBorder = remember(primaryAccent, isDark) {
+        if (isDark) {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.30f),
+                0.55f to primaryAccent.copy(alpha = 0.34f),
+                1.0f to Color(0xFF64B5F6).copy(alpha = 0.22f)
+            )
+        } else {
+            Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = 0.72f),
+                0.55f to primaryAccent.copy(alpha = 0.28f),
+                1.0f to primaryAccent.copy(alpha = 0.20f)
+            )
+        }
+    }
+
     val tabSlotWidth = 118.dp
     val selectedTabIndex = MainNavTab.entries.indexOf(selectedTab).coerceAtLeast(0)
     val indicatorOffsetX by animateDpAsState(
-        targetValue = if (selectedTabIndex == 0) 0.dp else tabSlotWidth,
+        targetValue = tabSlotWidth * selectedTabIndex,
         animationSpec = spring(
-            dampingRatio = 0.82f,
-            stiffness = 420f
+            dampingRatio = 0.78f,
+            stiffness = 380f
         ),
         label = "TabIndicatorSlide"
     )
@@ -838,32 +906,26 @@ fun LiquidGlassBottomNavPill(
             shape = capsuleShape,
             blurRadius = 28.dp,
             featherBottomEdge = false,
-            border = BorderStroke(1.25.dp, liquidCrystalBorder),
+            border = BorderStroke(1.15.dp, liquidCrystalBorder),
             glassProgressOverride = 1f,
-            baseBackgroundColor = null,
-            specularOverlayBrush = null,
+            baseBackgroundColor = frostedCapsuleTint,
+            specularOverlayBrush = innerCapsuleGloss,
             modifier = Modifier
-                .height(56.dp)
-                .crystalOuterShadow(
-                    shape = CircleShape,
-                    color = pillOuterShadowColor,
-                    blurSpread = 14.dp,
-                    offsetY = 4.dp
-                )
+                .height(58.dp)
                 .testTag("floating_bottom_nav_pill")
         ) {
             Box(
                 contentAlignment = Alignment.CenterStart,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp)
             ) {
                 // Single shared active indicator capsule sliding smoothly behind the tab items
                 Box(
                     modifier = Modifier
                         .offset(x = indicatorOffsetX)
                         .width(tabSlotWidth)
-                        .height(44.dp)
+                        .height(48.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(activePillBg)
+                        .background(activePillBrush)
                         .border(1.dp, activePillBorder, RoundedCornerShape(50))
                         .testTag("bottom_nav_sliding_indicator")
                 )
@@ -880,7 +942,7 @@ fun LiquidGlassBottomNavPill(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            animationSpec = spring(dampingRatio = 0.85f, stiffness = 450f),
+                            animationSpec = spring(dampingRatio = 0.78f, stiffness = 380f),
                             label = "TabIconTint_${tab.name}"
                         )
                         val animatedTextColor by animateColorAsState(
@@ -889,13 +951,13 @@ fun LiquidGlassBottomNavPill(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            animationSpec = spring(dampingRatio = 0.85f, stiffness = 450f),
+                            animationSpec = spring(dampingRatio = 0.78f, stiffness = 380f),
                             label = "TabTextColor_${tab.name}"
                         )
                         Box(
                             modifier = Modifier
                                 .width(tabSlotWidth)
-                                .height(44.dp)
+                                .height(48.dp)
                                 .clip(RoundedCornerShape(50))
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -943,10 +1005,17 @@ fun LiquidGlassBottomNavPill(
             )
 
             val topEdgeHighlightBorder = remember(primaryAccent, isDark) {
-                Brush.linearGradient(
-                    0.0f to Color.White.copy(alpha = if (isDark) 0.56f else 0.72f),
-                    0.50f to primaryAccent.copy(alpha = 0.45f),
-                    1.0f to Color.White.copy(alpha = 0.24f)
+                Brush.verticalGradient(
+                    0.0f to Color.White.copy(alpha = if (isDark) 0.42f else 0.65f),
+                    0.50f to primaryAccent.copy(alpha = 0.36f),
+                    1.0f to Color(0xFF64B5F6).copy(alpha = 0.24f)
+                )
+            }
+            val playInnerGloss = remember {
+                Brush.verticalGradient(
+                    0.0f to Color.White.copy(alpha = 0.30f),
+                    0.45f to Color.Transparent,
+                    1.0f to Color(0xFF64B5F6).copy(alpha = 0.14f)
                 )
             }
             val frostedIconHalo = remember {
@@ -958,7 +1027,7 @@ fun LiquidGlassBottomNavPill(
                 )
             }
             val playFillColor = if (glassConfig.enabled) {
-                primaryAccent.copy(alpha = 0.55f + 0.25f * frostNorm)
+                primaryAccent.copy(alpha = 0.62f + 0.22f * frostNorm)
             } else {
                 primaryAccent
             }
@@ -967,22 +1036,16 @@ fun LiquidGlassBottomNavPill(
                 shape = CircleShape,
                 blurRadius = 28.dp,
                 featherBottomEdge = false,
-                border = if (glassConfig.enabled) BorderStroke(1.25.dp, topEdgeHighlightBorder) else null,
+                border = if (glassConfig.enabled) BorderStroke(1.15.dp, topEdgeHighlightBorder) else null,
                 glassProgressOverride = 1f,
                 baseBackgroundColor = playFillColor,
-                specularOverlayBrush = null,
+                specularOverlayBrush = playInnerGloss,
                 modifier = Modifier
                     .graphicsLayer {
                         scaleX = pressScale
                         scaleY = pressScale
                     }
-                    .size(56.dp)
-                    .crystalOuterShadow(
-                        shape = CircleShape,
-                        color = primaryAccent.copy(alpha = if (isDark) 0.50f else 0.34f),
-                        blurSpread = 14.dp,
-                        offsetY = 4.dp
-                    )
+                    .size(58.dp)
                     .clickable(
                         interactionSource = playInteractionSource,
                         indication = null,
