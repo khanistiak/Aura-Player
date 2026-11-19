@@ -12,11 +12,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -135,8 +139,16 @@ fun SubtitleOverlay(
         label = "subtitle_margin_osd_alpha"
     )
 
-    val userBottomMarginDp = (styleConfig.bottomMargin.coerceIn(0, 150) * 1.4f).dp
-    val hudLiftedBottomDp = maxOf(userBottomMarginDp, bottomHudHeightDp + 12.dp)
+    val clampedMargin = styleConfig.bottomMargin.coerceIn(0, 150)
+    val userBottomMarginDp = (clampedMargin * 1.4f).dp
+    val baseHudClearanceDp = bottomHudHeightDp + 12.dp
+    // Apply custom vertical drag offset gently relative to seekbar clearance when HUD is visible
+    // without pushing subtitles up into the middle of the frame.
+    val extraUserOffsetAboveDefaultDp = ((clampedMargin - SubtitleStyleConfig.Default.bottomMargin)
+        .coerceAtLeast(0) * 0.35f).dp
+    val hudClearanceWithOffsetDp = (baseHudClearanceDp + extraUserOffsetAboveDefaultDp)
+        .coerceAtMost(baseHudClearanceDp + 32.dp)
+    val hudLiftedBottomDp = maxOf(userBottomMarginDp, hudClearanceWithOffsetDp)
     val targetBottomPaddingDp = if (controlsVisible && !isDraggingSubtitle && !isSubtitleDrawerOpen) {
         hudLiftedBottomDp
     } else {
@@ -201,7 +213,11 @@ fun SubtitleOverlay(
                 modifier = Modifier
                     .align(boxAlignment)
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing
+                            .union(WindowInsets.displayCutout)
+                            .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                    )
                     .padding(
                         start = 20.dp,
                         end = 20.dp,

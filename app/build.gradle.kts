@@ -16,8 +16,8 @@ android {
     applicationId = "com.istiak.auraplayer"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "2.6.3"
+    versionCode = 264
+    versionName = "2.6.4"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

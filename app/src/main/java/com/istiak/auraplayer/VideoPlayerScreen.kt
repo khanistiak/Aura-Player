@@ -79,15 +79,20 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -604,7 +609,14 @@ fun VideoPlayerScreen(
     }
     var bottomHudHeightPx by remember { mutableIntStateOf(0) }
     val bottomHudHeightDp = with(LocalDensity.current) {
-        if (bottomHudHeightPx > 0) bottomHudHeightPx.toDp() else if (isPortrait) 148.dp else 96.dp
+        if (bottomHudHeightPx > 0) {
+            // Subtract invisible top touch-box padding above the centered seekbar/timestamps row
+            val seekbarVisualTopDp = bottomHudHeightPx.toDp() - 24.dp
+            if (isPortrait) seekbarVisualTopDp.coerceIn(136.dp, 160.dp)
+            else seekbarVisualTopDp.coerceIn(84.dp, 96.dp)
+        } else {
+            if (isPortrait) 144.dp else 94.dp
+        }
     }
 
     // Chapters parsed dynamically from MediaMetadata / ExoPlayer ID3 / Container (MKV EBML / MP4 chpl)
@@ -2221,6 +2233,13 @@ fun VideoPlayerScreen(
             }
         }
 
+        // Horizontal safe drawing + display cutout insets so volume/brightness pills never overlap
+        // the punch-hole camera cutout regardless of landscape rotation direction.
+        val horizontalSafeInsets = WindowInsets.safeDrawing
+            .union(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Horizontal)
+            .asPaddingValues()
+
         // OPPOSITE-SIDE VERTICAL VOLUME SLIDER (Pinned to LEFT edge during Right-Side Swipe, supports up to 200% Boost)
         AnimatedVisibility(
             visible = !isInPipMode && leftEdgeVolumeVisible,
@@ -2228,7 +2247,8 @@ fun VideoPlayerScreen(
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .padding(start = 24.dp)
+                .padding(horizontalSafeInsets)
+                .padding(start = 16.dp)
         ) {
             val volPercent = (volumeFraction * 100f).roundToInt().coerceIn(0, 200)
             val isBoostActive = volPercent > 100
@@ -2248,7 +2268,8 @@ fun VideoPlayerScreen(
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 24.dp)
+                .padding(horizontalSafeInsets)
+                .padding(end = 16.dp)
         ) {
             VerticalEdgeSliderPill(
                 icon = Icons.Filled.WbSunny,
@@ -2993,7 +3014,6 @@ fun VideoPlayerScreen(
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .zIndex(2f)
-                        .onSizeChanged { bottomHudHeightPx = it.height }
                         .background(
                             Brush.verticalGradient(
                                 listOf(
@@ -3008,8 +3028,13 @@ fun VideoPlayerScreen(
                             indication = null,
                             onClick = { lastInteractionTick++ }
                         )
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing
+                                .union(WindowInsets.displayCutout)
+                                .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                        )
+                        .onSizeChanged { bottomHudHeightPx = it.height }
+                        .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp)
                 ) {
                     // Seek Row: Left Timestamp + Sky-Blue (#58A6FF) Slider with Thumb-Anchored Tooltip + Right Total Duration
                     SeekBarWithFloatingTooltip(
@@ -3043,7 +3068,7 @@ fun VideoPlayerScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(if (isPortrait) 8.dp else 4.dp))
 
                     val onLockClick: () -> Unit = {
                         isScreenLocked = true
