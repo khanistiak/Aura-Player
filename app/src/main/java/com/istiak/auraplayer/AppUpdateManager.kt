@@ -30,8 +30,9 @@ import java.util.TimeZone
  */
 const val GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/khanistiak/Aura-Player/releases/latest"
 
-const val UPDATE_NOTIFICATION_CHANNEL_ID = "auraplayer_updates"
+const val UPDATE_NOTIFICATION_CHANNEL_ID = "app_updates"
 const val UPDATE_NOTIFICATION_CHANNEL_NAME = "App Updates"
+const val EXTRA_SHOW_UPDATE_DIALOG = "extra_show_update_dialog"
 const val EXTRA_SHOW_UPDATE_SHEET = "show_update_sheet"
 
 private const val UPDATE_NOTIFICATION_ID = 2601
@@ -187,34 +188,27 @@ class AppUpdateManager(context: Context) {
     }
 
     /**
-     * Runs on startup: checks GitHub Releases against the installed runtime version and
-     * `lastDismissedOrInstalledTag` in [settingsStore]. Only posts a notification and returns
-     * [ReleaseUpdateInfo] when a strictly newer semantic version is available and not dismissed.
+     * Runs silently on foreground app launch: checks GitHub Releases against the installed runtime
+     * version and `dismissed_update_version` in [settingsStore].
+     * Returns [ReleaseUpdateInfo] when a strictly newer release is available and has not been
+     * dismissed via "Later" (or always when [ignoreDismissed] is true, such as notification tap).
      */
-    suspend fun checkOnStartupAndNotifyIfNeeded(
+    suspend fun checkForForegroundUpdate(
         settingsStore: SettingsDataStore,
-        localVersion: String = getInstalledVersionName()
+        localVersion: String = getInstalledVersionName(),
+        ignoreDismissed: Boolean = false
     ): ReleaseUpdateInfo? = withContext(Dispatchers.IO) {
         val effectiveLocalVersion = localVersion.ifBlank { getInstalledVersionName() }
         when (val result = checkForUpdates(localVersion = effectiveLocalVersion)) {
             is UpdateCheckResult.UpdateAvailable -> {
                 val release = result.info
-                val settings = runCatching { settingsStore.settingsFlow.first() }.getOrNull()
-                val lastDismissedOrInstalled = settings?.lastDismissedOrInstalledTag.orEmpty()
-
-                if (!shouldPromptRelease(release.tagName, effectiveLocalVersion, lastDismissedOrInstalled)) {
-                    cancelUpdateNotification()
-                    return@withContext null
+                if (ignoreDismissed) {
+                    return@withContext release
                 }
-
-                val lastNotifiedTag = settings?.lastNotifiedUpdateTag.orEmpty()
-                val alreadyNotified = lastNotifiedTag.isNotBlank() &&
-                    !isNewerVersion(release.tagName, lastNotifiedTag)
-                if (!alreadyNotified) {
-                    val posted = postSystemUpdateNotification(release)
-                    if (posted) {
-                        settingsStore.setLastNotifiedUpdateTag(release.tagName)
-                    }
+                val settings = runCatching { settingsStore.settingsFlow.first() }.getOrNull()
+                val dismissedVersion = settings?.dismissedUpdateVersion.orEmpty()
+                if (!shouldPromptRelease(release.tagName, effectiveLocalVersion, dismissedVersion)) {
+                    return@withContext null
                 }
                 release
             }
@@ -226,8 +220,55 @@ class AppUpdateManager(context: Context) {
     }
 
     /**
-     * Posts a high-priority system update notification that opens `MainActivity` with
-     * `"show_update_sheet" = true` when tapped.
+     * Runs in background via [UpdateCheckWorker]: checks GitHub Releases and posts a one-time
+     * system notification per release when `release.tagName != notified_update_version`.
+     * Returns `true` if the check completed cleanly (update found or already up-to-date),
+     * or `false` on transient network error so WorkManager may retry.
+     */
+    suspend fun checkInBackgroundAndNotifyIfNeeded(
+        settingsStore: SettingsDataStore,
+        localVersion: String = getInstalledVersionName()
+    ): Boolean = withContext(Dispatchers.IO) {
+        val effectiveLocalVersion = localVersion.ifBlank { getInstalledVersionName() }
+        when (val result = checkForUpdates(localVersion = effectiveLocalVersion)) {
+            is UpdateCheckResult.UpdateAvailable -> {
+                val release = result.info
+                val settings = runCatching { settingsStore.settingsFlow.first() }.getOrNull()
+                val lastNotifiedVersion = settings?.notifiedUpdateVersion.orEmpty()
+                val alreadyNotified = lastNotifiedVersion.equals(release.tagName, ignoreCase = true) ||
+                    (lastNotifiedVersion.isNotBlank() && !isNewerVersion(release.tagName, lastNotifiedVersion))
+
+                if (!alreadyNotified) {
+                    val posted = postSystemUpdateNotification(release)
+                    if (posted) {
+                        settingsStore.setNotifiedUpdateVersion(release.tagName)
+                    }
+                }
+                true
+            }
+            is UpdateCheckResult.UpToDate -> {
+                cancelUpdateNotification()
+                true
+            }
+            is UpdateCheckResult.Error -> false
+        }
+    }
+
+    /**
+     * Compatibility startup helper delegating to [checkForForegroundUpdate].
+     */
+    suspend fun checkOnStartupAndNotifyIfNeeded(
+        settingsStore: SettingsDataStore,
+        localVersion: String = getInstalledVersionName()
+    ): ReleaseUpdateInfo? = checkForForegroundUpdate(
+        settingsStore = settingsStore,
+        localVersion = localVersion,
+        ignoreDismissed = false
+    )
+
+    /**
+     * Posts a high-priority system update notification on the `"app_updates"` (`"App Updates"`)
+     * channel that launches `MainActivity` with [EXTRA_SHOW_UPDATE_DIALOG] = true when tapped.
      */
     fun postSystemUpdateNotification(release: ReleaseUpdateInfo): Boolean {
         ensureUpdateNotificationChannel()
@@ -241,6 +282,7 @@ class AppUpdateManager(context: Context) {
 
         val tapIntent = Intent(appContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_SHOW_UPDATE_DIALOG, true)
             putExtra(EXTRA_SHOW_UPDATE_SHEET, true)
         }
         val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
@@ -252,13 +294,16 @@ class AppUpdateManager(context: Context) {
             pendingFlags
         )
 
+        val notificationTitle = "Aura Player ${release.displayTag} is available"
+        val notificationBody = "Tap to view what's new and download the update."
+
         val notification = NotificationCompat.Builder(appContext, UPDATE_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Aura Player v${release.version} Update Available")
-            .setContentText("Tap to view what's new and download the latest APK.")
+            .setContentTitle(notificationTitle)
+            .setContentText(notificationBody)
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("Tap to view what's new and download the latest APK.")
+                    .bigText(notificationBody)
             )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)

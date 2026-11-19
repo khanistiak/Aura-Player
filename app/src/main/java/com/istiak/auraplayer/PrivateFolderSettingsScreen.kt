@@ -101,7 +101,8 @@ fun PrivateFolderSettingsScreen(
     onSaveSecurityQuestion: (String, String) -> Unit,
     onDestroySecureFolder: () -> Unit,
     onBack: () -> Unit,
-    onShowToast: (String) -> Unit
+    onShowToast: (String) -> Unit,
+    onPinRecordSaved: (String) -> Unit = {}
 ) {
     BackHandler { onBack() }
 
@@ -327,7 +328,8 @@ fun PrivateFolderSettingsScreen(
             subtitle = "Create a 4-digit PIN to unlock your Private Folder",
             onDismiss = { showPinSetupDialog = false },
             onConfirmPin = { newPin ->
-                BiometricAuth.setCustomVaultPin(context, newPin)
+                val encryptedRecord = BiometricAuth.setCustomVaultPin(context, newPin)
+                onPinRecordSaved(encryptedRecord)
                 showPinSetupDialog = false
                 onShowToast("Vault PIN updated")
             }
@@ -364,10 +366,7 @@ fun PrivateFolderSettingsScreen(
             onDismiss = { showDestroyConfirmDialog = false },
             onConfirmDestroy = {
                 showDestroyConfirmDialog = false
-                context.getSharedPreferences("aura_vault_security", Context.MODE_PRIVATE)
-                    .edit()
-                    .remove("vault_fallback_pin")
-                    .apply()
+                BiometricAuth.clearVaultCredentials(context)
                 onDestroySecureFolder()
             }
         )

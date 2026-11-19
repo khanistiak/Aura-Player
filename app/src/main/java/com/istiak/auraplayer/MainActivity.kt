@@ -13,6 +13,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Rational
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -140,8 +141,11 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false)) {
+        val openUpdate = intent.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) ||
+            intent.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false)
+        if (openUpdate) {
             showUpdateSheetRequestState.value = true
+            intent.removeExtra(EXTRA_SHOW_UPDATE_DIALOG)
             intent.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
         }
     }
@@ -150,9 +154,13 @@ class MainActivity : FragmentActivity() {
         setTheme(R.style.Theme_AuraPlayer_Starting)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        UpdateCheckWorker.schedulePeriodicCheck(applicationContext)
 
-        if (intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false) == true) {
+        val openUpdateFromLaunch = intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) == true ||
+            intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false) == true
+        if (openUpdateFromLaunch) {
             showUpdateSheetRequestState.value = true
+            intent?.removeExtra(EXTRA_SHOW_UPDATE_DIALOG)
             intent?.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
         }
 
@@ -331,6 +339,35 @@ fun AuraPlayerApp(
     var activePlaylist by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var forceResumeOnPlayerStart by remember { mutableStateOf(false) }
 
+    // Enforce FLAG_SECURE while viewing the Private Vault, Private Folder Settings, or playing a vault video
+    val isPrivateVaultSurfaceActive = overlayScreen == ActiveOverlayScreen.VAULT ||
+        overlayScreen == ActiveOverlayScreen.PRIVATE_FOLDER_SETTINGS ||
+        activePlayingVideo?.isVaultItem == true
+    DisposableEffect(activity, isPrivateVaultSurfaceActive) {
+        if (isPrivateVaultSurfaceActive) {
+            activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
+    // Automatically migrate any legacy plaintext Vault PIN and sync encrypted PBKDF2 record with DataStore
+    LaunchedEffect(settings.encryptedVaultPinRecord) {
+        withContext(Dispatchers.IO) {
+            BiometricAuth.syncEncryptedPinRecordFromDataStore(
+                activity.applicationContext,
+                settings.encryptedVaultPinRecord
+            )
+            val hardenedRecord = BiometricAuth.migrateLegacyPinIfNeeded(activity.applicationContext)
+            if (!hardenedRecord.isNullOrBlank() && hardenedRecord != settings.encryptedVaultPinRecord) {
+                settingsStore.saveEncryptedVaultPinRecord(hardenedRecord)
+            }
+        }
+    }
+
     LaunchedEffect(pendingExternalVideoUri) {
         val extUri = pendingExternalVideoUri ?: return@LaunchedEffect
         val stub = VideoItem(
@@ -491,12 +528,9 @@ fun AuraPlayerApp(
                 runCatching {
                     File(activity.filesDir, "vault_meta_cache.json").delete()
                 }
-                activity.getSharedPreferences("aura_vault_security", android.content.Context.MODE_PRIVATE)
-                    .edit()
-                    .remove("vault_fallback_pin")
-                    .apply()
+                BiometricAuth.clearVaultCredentials(activity.applicationContext)
             }
-            settingsStore.setVaultSecurityQuestion("", "")
+            settingsStore.clearVaultSecurityRecords()
             settingsStore.setHideSecureFolderSettings(false)
             vaultVideos = emptyList()
             isVaultUnlocked = false
@@ -768,7 +802,10 @@ fun AuraPlayerApp(
                     }
                 }
             }
-            val release = appUpdateManager.checkOnStartupAndNotifyIfNeeded(settingsStore)
+            val release = appUpdateManager.checkForForegroundUpdate(
+                settingsStore = settingsStore,
+                ignoreDismissed = false
+            )
             if (release != null) {
                 startupUpdateRelease = release
                 showUpdateBottomSheet = true
@@ -779,17 +816,18 @@ fun AuraPlayerApp(
         }
     }
 
-    // Handle tapping the system update notification ("show_update_sheet" = true)
+    // Handle tapping the system update notification (EXTRA_SHOW_UPDATE_DIALOG = true)
     LaunchedEffect(openUpdateSheetFromNotification) {
         if (openUpdateSheetFromNotification) {
             onConsumeUpdateSheetNotificationIntent()
             val installedVersion = appUpdateManager.getInstalledVersionName()
             val release = startupUpdateRelease?.takeIf {
                 AppUpdateManager.isNewerVersion(it.tagName, installedVersion)
-            } ?: when (val res = appUpdateManager.checkForUpdates(localVersion = installedVersion)) {
-                is UpdateCheckResult.UpdateAvailable -> res.info
-                else -> null
-            }
+            } ?: appUpdateManager.checkForForegroundUpdate(
+                settingsStore = settingsStore,
+                localVersion = installedVersion,
+                ignoreDismissed = true
+            )
             if (release != null && AppUpdateManager.isNewerVersion(release.tagName, installedVersion)) {
                 startupUpdateRelease = release
                 showUpdateBottomSheet = true
@@ -803,7 +841,6 @@ fun AuraPlayerApp(
 
     fun triggerVaultAuthentication() {
         if (!settings.biometricVaultLockEnabled) {
-            isVaultUnlocked = true
             return
         }
         vaultAuthError = null
@@ -1197,6 +1234,11 @@ fun AuraPlayerApp(
                                 onBack = { overlayScreen = privateFolderReturnScreen },
                                 onShowToast = { msg ->
                                     vaultToastEvent = VaultToastEvent(msg, VaultToastType.INFO)
+                                },
+                                onPinRecordSaved = { encryptedRecord ->
+                                    coroutineScope.launch {
+                                        settingsStore.saveEncryptedVaultPinRecord(encryptedRecord)
+                                    }
                                 }
                             )
                         }
@@ -1564,7 +1606,7 @@ fun AuraPlayerApp(
                             .padding(paddingValues)
                     ) {
                         VaultScreen(
-                            isUnlocked = isVaultUnlocked || !settings.biometricVaultLockEnabled,
+                            isUnlocked = isVaultUnlocked,
                             showFallbackPinSheet = showFallbackPinSheet,
                             vaultVideos = vaultVideos,
                             authErrorMessage = vaultAuthError,
@@ -1604,6 +1646,12 @@ fun AuraPlayerApp(
                                         vaultVideos = vaultManager.getVaultVideos()
                                         snackbarHostState.showSnackbar("Deleted from Private Vault")
                                     }
+                                }
+                            },
+                            isBiometricUnlockEnabled = settings.biometricVaultLockEnabled,
+                            onVaultPinSavedRecord = { encryptedRecord ->
+                                coroutineScope.launch {
+                                    settingsStore.saveEncryptedVaultPinRecord(encryptedRecord)
                                 }
                             },
                             isSecureFolderSettingsHidden = settings.hideSecureFolderSettings,
@@ -1722,7 +1770,10 @@ fun AuraPlayerApp(
                                 onOpenSortSheet = { showSortOptionsSheet = true },
                                 onOpenVault = {
                                     overlayScreen = ActiveOverlayScreen.VAULT
-                                    if (!isVaultUnlocked && settings.biometricVaultLockEnabled) {
+                                    if (!isVaultUnlocked &&
+                                        settings.biometricVaultLockEnabled &&
+                                        BiometricAuth.hasCustomVaultPin(activity)
+                                    ) {
                                         triggerVaultAuthentication()
                                     }
                                 },
@@ -2091,16 +2142,19 @@ fun AuraPlayerApp(
 
         if (showUpdateBottomSheet && startupUpdateRelease != null) {
             val activeRelease = startupUpdateRelease!!
-            UpdateBottomSheet(
+            LiquidGlassUpdateDialog(
                 release = activeRelease,
                 updateManager = appUpdateManager,
-                onDismiss = {
+                onLater = {
                     showUpdateBottomSheet = false
                     startupUpdateRelease = null
                     appUpdateManager.cancelUpdateNotification()
                     coroutineScope.launch {
-                        settingsStore.setLastDismissedOrInstalledTag(activeRelease.tagName)
+                        settingsStore.setDismissedUpdateVersion(activeRelease.tagName)
                     }
+                },
+                onDownloadStarted = {
+                    appUpdateManager.cancelUpdateNotification()
                 }
             )
         }

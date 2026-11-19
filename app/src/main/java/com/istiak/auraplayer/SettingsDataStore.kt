@@ -222,6 +222,7 @@ data class AppSettingsState(
     val hideSecureFolderSettings: Boolean = false,
     val vaultSecurityQuestion: String = "",
     val vaultSecurityAnswer: String = "",
+    val encryptedVaultPinRecord: String = "",
 
     // Sort & View Options
     val sortField: SortField = SortField.TITLE,
@@ -236,8 +237,10 @@ data class AppSettingsState(
     val seenBaselineEpochSec: Long = 0L,
     val playbackPositionsMs: Map<Long, Long> = emptyMap(),
     val cachedDurationsMs: Map<Long, Long> = emptyMap(),
-    val lastNotifiedUpdateTag: String = "",
-    val lastDismissedOrInstalledTag: String = ""
+    val notifiedUpdateVersion: String = "",
+    val dismissedUpdateVersion: String = "",
+    val lastNotifiedUpdateTag: String = notifiedUpdateVersion,
+    val lastDismissedOrInstalledTag: String = dismissedUpdateVersion
 ) {
     val defaultResumePlayback: Boolean
         get() = resumePlaybackMode == ResumePlaybackMode.RESUME
@@ -314,6 +317,7 @@ class SettingsDataStore(private val context: Context) {
         val HIDE_SECURE_FOLDER_SETTINGS = booleanPreferencesKey("hide_secure_folder_settings")
         val VAULT_SECURITY_QUESTION = stringPreferencesKey("vault_security_question")
         val VAULT_SECURITY_ANSWER = stringPreferencesKey("vault_security_answer")
+        val VAULT_PIN_HASH_RECORD = stringPreferencesKey("vault_pin_hash_record")
 
         val SORT_FIELD = stringPreferencesKey("sort_field")
         val SORT_ASCENDING = booleanPreferencesKey("sort_ascending")
@@ -326,6 +330,8 @@ class SettingsDataStore(private val context: Context) {
         val SEEN_BASELINE_EPOCH_SEC = longPreferencesKey("seen_baseline_epoch_sec")
         val PLAYBACK_POSITIONS = stringSetPreferencesKey("playback_positions")
         val CACHED_DURATIONS = stringSetPreferencesKey("cached_durations")
+        val NOTIFIED_UPDATE_VERSION = stringPreferencesKey("notified_update_version")
+        val DISMISSED_UPDATE_VERSION = stringPreferencesKey("dismissed_update_version")
         val LAST_NOTIFIED_UPDATE_TAG = stringPreferencesKey("last_notified_update_tag")
         val LAST_DISMISSED_OR_INSTALLED_TAG = stringPreferencesKey("last_dismissed_or_installed_tag")
     }
@@ -437,7 +443,8 @@ class SettingsDataStore(private val context: Context) {
             appDisguiseMode = appDisguiseMode,
             hideSecureFolderSettings = prefs[Keys.HIDE_SECURE_FOLDER_SETTINGS] ?: false,
             vaultSecurityQuestion = prefs[Keys.VAULT_SECURITY_QUESTION] ?: "",
-            vaultSecurityAnswer = prefs[Keys.VAULT_SECURITY_ANSWER] ?: "",
+            vaultSecurityAnswer = BiometricAuth.decryptSecretValue(prefs[Keys.VAULT_SECURITY_ANSWER] ?: ""),
+            encryptedVaultPinRecord = prefs[Keys.VAULT_PIN_HASH_RECORD] ?: "",
             sortField = sortField,
             sortAscending = prefs[Keys.SORT_ASCENDING] ?: true,
             viewMode = viewMode,
@@ -448,8 +455,18 @@ class SettingsDataStore(private val context: Context) {
             seenBaselineEpochSec = prefs[Keys.SEEN_BASELINE_EPOCH_SEC] ?: 0L,
             playbackPositionsMs = positionsMap,
             cachedDurationsMs = cachedDurationsMap,
-            lastNotifiedUpdateTag = prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] ?: "",
-            lastDismissedOrInstalledTag = prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG] ?: ""
+            notifiedUpdateVersion = prefs[Keys.NOTIFIED_UPDATE_VERSION]
+                ?: prefs[Keys.LAST_NOTIFIED_UPDATE_TAG]
+                ?: "",
+            dismissedUpdateVersion = prefs[Keys.DISMISSED_UPDATE_VERSION]
+                ?: prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG]
+                ?: "",
+            lastNotifiedUpdateTag = prefs[Keys.NOTIFIED_UPDATE_VERSION]
+                ?: prefs[Keys.LAST_NOTIFIED_UPDATE_TAG]
+                ?: "",
+            lastDismissedOrInstalledTag = prefs[Keys.DISMISSED_UPDATE_VERSION]
+                ?: prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG]
+                ?: ""
         )
     }
 
@@ -738,9 +755,29 @@ class SettingsDataStore(private val context: Context) {
     }
 
     suspend fun setVaultSecurityQuestion(question: String, answer: String) {
+        val trimmedAnswer = answer.trim()
+        val encryptedAnswer = if (trimmedAnswer.isEmpty()) "" else BiometricAuth.encryptSecretValue(trimmedAnswer)
         context.appDataStore.edit {
             it[Keys.VAULT_SECURITY_QUESTION] = question.trim()
-            it[Keys.VAULT_SECURITY_ANSWER] = answer.trim()
+            it[Keys.VAULT_SECURITY_ANSWER] = encryptedAnswer
+        }
+    }
+
+    suspend fun saveEncryptedVaultPinRecord(encryptedRecord: String) {
+        context.appDataStore.edit {
+            if (encryptedRecord.isBlank()) {
+                it.remove(Keys.VAULT_PIN_HASH_RECORD)
+            } else {
+                it[Keys.VAULT_PIN_HASH_RECORD] = encryptedRecord
+            }
+        }
+    }
+
+    suspend fun clearVaultSecurityRecords() {
+        context.appDataStore.edit {
+            it.remove(Keys.VAULT_PIN_HASH_RECORD)
+            it.remove(Keys.VAULT_SECURITY_QUESTION)
+            it.remove(Keys.VAULT_SECURITY_ANSWER)
         }
     }
 
@@ -839,15 +876,27 @@ class SettingsDataStore(private val context: Context) {
         }
     }
 
-    suspend fun setLastNotifiedUpdateTag(tagName: String) {
+    suspend fun setNotifiedUpdateVersion(tagName: String) {
+        val cleaned = tagName.trim()
         context.appDataStore.edit { prefs ->
-            prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] = tagName.trim()
+            prefs[Keys.NOTIFIED_UPDATE_VERSION] = cleaned
+            prefs[Keys.LAST_NOTIFIED_UPDATE_TAG] = cleaned
         }
     }
 
-    suspend fun setLastDismissedOrInstalledTag(tagName: String) {
+    suspend fun setDismissedUpdateVersion(tagName: String) {
+        val cleaned = tagName.trim()
         context.appDataStore.edit { prefs ->
-            prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG] = tagName.trim()
+            prefs[Keys.DISMISSED_UPDATE_VERSION] = cleaned
+            prefs[Keys.LAST_DISMISSED_OR_INSTALLED_TAG] = cleaned
         }
+    }
+
+    suspend fun setLastNotifiedUpdateTag(tagName: String) {
+        setNotifiedUpdateVersion(tagName)
+    }
+
+    suspend fun setLastDismissedOrInstalledTag(tagName: String) {
+        setDismissedUpdateVersion(tagName)
     }
 }
