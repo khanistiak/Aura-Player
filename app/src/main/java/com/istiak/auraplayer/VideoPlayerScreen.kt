@@ -269,6 +269,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+@OptIn(UnstableApi::class)
 enum class PlayerScaleMode(val label: String, val resizeMode: Int) {
     FIT("FIT TO SCREEN", AspectRatioFrameLayout.RESIZE_MODE_FIT),
     STRETCH("STRETCH", AspectRatioFrameLayout.RESIZE_MODE_FILL),
@@ -4921,6 +4922,7 @@ private suspend fun captureFrameToPictures(
     }
 }
 
+@OptIn(UnstableApi::class)
 private fun parseExoTracks(tracks: Tracks): Pair<List<AudioTrackUiModel>, List<SubtitleTrackUiModel>> {
     val parsedAudio = mutableListOf<AudioTrackUiModel>()
     val parsedSubs = mutableListOf<SubtitleTrackUiModel>()
@@ -5013,6 +5015,7 @@ private fun rememberVideoLuminanceState(
     return isLightTopRegion
 }
 
+@OptIn(UnstableApi::class)
 private suspend fun sampleTopRegionLuminance(playerView: PlayerView): Float? {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
     val surfaceView = playerView.videoSurfaceView ?: return null

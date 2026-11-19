@@ -53,6 +53,9 @@ android {
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")
+      ndk {
+        abiFilters += listOf("arm64-v8a", "x86_64")
+      }
     }
   }
   compileOptions {
@@ -67,6 +70,11 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
   }
 }
 
