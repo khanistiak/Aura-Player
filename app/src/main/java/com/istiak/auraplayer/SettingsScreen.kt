@@ -34,12 +34,19 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Swipe
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,21 +54,23 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.istiak.auraplayer.ui.components.ScrollAwareFixedHeader
 import com.istiak.auraplayer.ui.components.recordFrostedBackdrop
 import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
+import kotlinx.coroutines.launch
 
 private data class SettingsCategoryEntry(
     val key: String,
     val title: String,
     val icon: ImageVector,
     val testTag: String,
+    val isLoading: Boolean = false,
     val onClick: () -> Unit
 )
 
@@ -69,8 +78,8 @@ private data class SettingsCategoryEntry(
  * Category-Only Root Settings Hub (`SettingsScreen.kt`):
  * - Frozen `ScrollAwareFixedHeader`: `← Settings`
  * - Single elevated frosted card (`20.dp` radius, hairline dividers, leading tinted squircle icon badge,
- *   bold single-line title, right chevron `>`) with top-level categories including `Liquid glass`.
- * - Zero inline switches, speed pills, seek pills, sliders, or duplicate controls.
+ *   single-line title, right chevron `>`) with top-level categories including `Liquid glass`, `About`,
+ *   and `Check for Updates` directly below `About`.
  */
 @Composable
 fun SettingsScreen(
@@ -83,12 +92,28 @@ fun SettingsScreen(
     onOpenPrivateFolderSettings: () -> Unit,
     onOpenCodecDiagnostics: () -> Unit,
     onOpenAbout: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onShowCapsuleToast: ((String) -> Unit)? = null
 ) {
     BackHandler { onBack() }
 
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
+
+    val updateManager = remember(context) { AppUpdateManager(context.applicationContext) }
+    var isCheckingForUpdates by remember { mutableStateOf(false) }
+    var availableUpdate by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
+    var localToastEvent by remember { mutableStateOf<VaultToastEvent?>(null) }
+
+    fun triggerCapsuleToast(message: String) {
+        if (onShowCapsuleToast != null) {
+            onShowCapsuleToast(message)
+        } else {
+            localToastEvent = VaultToastEvent(message = message, type = VaultToastType.INFO)
+        }
+    }
 
     val categories = buildList {
         add(
@@ -165,6 +190,35 @@ fun SettingsScreen(
                 onClick = onOpenAbout
             )
         )
+        add(
+            SettingsCategoryEntry(
+                key = "check_for_updates",
+                title = "Check for Updates",
+                icon = Icons.Rounded.SystemUpdate,
+                testTag = "settings_category_check_updates",
+                isLoading = isCheckingForUpdates,
+                onClick = {
+                    if (!isCheckingForUpdates) {
+                        isCheckingForUpdates = true
+                        coroutineScope.launch {
+                            val result = updateManager.checkForUpdates()
+                            isCheckingForUpdates = false
+                            when (result) {
+                                is UpdateCheckResult.UpdateAvailable -> {
+                                    availableUpdate = result.info
+                                }
+                                is UpdateCheckResult.UpToDate -> {
+                                    triggerCapsuleToast("You're on the latest version")
+                                }
+                                is UpdateCheckResult.Error -> {
+                                    triggerCapsuleToast("You're on the latest version")
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
     }
 
     val listState = rememberLazyListState()
@@ -237,6 +291,7 @@ fun SettingsScreen(
                         SettingsCategoryRow(
                             icon = entry.icon,
                             title = entry.title,
+                            isLoading = entry.isLoading,
                             onClick = entry.onClick,
                             testTag = entry.testTag
                         )
@@ -284,6 +339,23 @@ fun SettingsScreen(
                 )
             }
         }
+
+        VaultNotificationPill(
+            event = localToastEvent,
+            onDismiss = { localToastEvent = null },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+
+    availableUpdate?.let { releaseInfo ->
+        UpdateBottomSheet(
+            release = releaseInfo,
+            updateManager = updateManager,
+            onDismiss = {
+                updateManager.cancelUpdateNotification()
+                availableUpdate = null
+            }
+        )
     }
 }
 
@@ -291,6 +363,7 @@ fun SettingsScreen(
 private fun SettingsCategoryRow(
     icon: ImageVector,
     title: String,
+    isLoading: Boolean = false,
     onClick: () -> Unit,
     testTag: String
 ) {
@@ -305,14 +378,14 @@ private fun SettingsCategoryRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 58.dp)
-            .clickable(onClick = onClick)
+            .clickable(enabled = !isLoading, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
             .testTag(testTag)
     ) {
         Box(
             modifier = Modifier
                 .size(36.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(iconContainerBg),
             contentAlignment = Alignment.Center
         ) {
@@ -326,19 +399,29 @@ private fun SettingsCategoryRow(
         Spacer(modifier = Modifier.width(14.dp))
         Text(
             text = title,
+            style = MaterialTheme.typography.bodyLarge,
             color = palette.primaryText,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = palette.secondaryText,
-            modifier = Modifier.size(20.dp)
-        )
+        if (isLoading) {
+            CircularProgressIndicator(
+                color = primary,
+                strokeWidth = 2.dp,
+                modifier = Modifier
+                    .size(18.dp)
+                    .testTag("settings_update_loading_spinner")
+            )
+        } else {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = palette.secondaryText,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

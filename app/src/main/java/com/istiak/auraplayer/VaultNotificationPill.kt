@@ -24,13 +24,13 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -53,9 +53,10 @@ data class VaultToastEvent(
 )
 
 /**
- * Compact 1-second floating Capsule Toast Pill for Private Vault lock/restore and MediaStore rescan actions:
+ * Compact 1-second floating Capsule Toast Pill for Private Vault lock/restore, MediaStore rescan, and status actions:
  * - Centered horizontally above the bottom navigation bar (`padding(bottom = 96.dp)`).
- * - Dark obsidian-glass surface (`Color(0xFF141824).copy(alpha = 0.90f)`) with `1.dp` white specular border.
+ * - Dark obsidian-glass surface (`Color(0xFF141824).copy(alpha = 0.90f)`) with `0.8.dp` subtle translucent border
+ *   and zero drop shadow.
  * - Small leading icon in `#60A5FA` and concise single-line white text.
  * - Auto-dismisses strictly after `1000ms` with a fast `150ms` fade/scale animation.
  */
@@ -87,22 +88,16 @@ fun VaultNotificationPill(
                 scaleOut(targetScale = 0.92f, animationSpec = tween(durationMillis = 150))
         ) {
             event?.let { toast ->
-                val pillShape = RoundedCornerShape(999.dp)
+                val pillShape = RoundedCornerShape(50)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
-                        .shadow(
-                            elevation = 12.dp,
-                            shape = pillShape,
-                            ambientColor = Color.Black.copy(alpha = 0.35f),
-                            spotColor = Color.Black.copy(alpha = 0.40f)
-                        )
                         .clip(pillShape)
                         .background(Color(0xFF141824).copy(alpha = 0.90f))
                         .border(
-                            width = 1.dp,
-                            color = Color.White.copy(alpha = 0.22f),
+                            width = 0.8.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                             shape = pillShape
                         )
                         .padding(horizontal = 16.dp, vertical = 10.dp)

@@ -122,9 +122,9 @@ fun AboutScreen(
     val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val scrollLayout = rememberScrollAwareGlassLayout(
         listState = listState,
-        defaultHeaderHeight = 64.dp,
-        extraTopGap = 4.dp,
-        bottomPadding = navBottomDp + 24.dp,
+        defaultHeaderHeight = 58.dp,
+        extraTopGap = 2.dp,
+        bottomPadding = navBottomDp + 16.dp,
         horizontalPadding = 12.dp
     )
 
@@ -133,10 +133,8 @@ fun AboutScreen(
             .fillMaxSize()
             .testTag("about_screen")
     ) {
-        LazyColumn(
-            state = listState,
-            contentPadding = scrollLayout.contentPadding,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .recordFrostedBackdrop(
@@ -144,260 +142,232 @@ fun AboutScreen(
                     scrollableState = listState,
                     contentLayerOverride = scrollLayout.contentGraphicsLayer
                 )
+                .padding(scrollLayout.contentPadding)
         ) {
             // Hero Brand Card
-            item(key = "hero_brand_card") {
-                val heroShape = RoundedCornerShape(24.dp)
-                val heroBrush = if (isDark) {
-                    Brush.linearGradient(
-                        listOf(
-                            Color(0xFF1A264A),
-                            Color(0xFF281E49),
-                            Color(0xFF161D33)
-                        )
+            val heroShape = RoundedCornerShape(24.dp)
+            val heroBrush = if (isDark) {
+                Brush.linearGradient(
+                    listOf(
+                        Color(0xFF1A264A),
+                        Color(0xFF281E49),
+                        Color(0xFF161D33)
                     )
+                )
+            } else {
+                Brush.linearGradient(
+                    listOf(
+                        Color(0xFFDCEEFF),
+                        Color(0xFFECE2FF),
+                        Color(0xFFF6F7FF)
+                    )
+                )
+            }
+            val heroBorder = if (isDark) {
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.24f), Color(0xFF60A5FA).copy(alpha = 0.22f)))
+            } else {
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.96f), Color(0xFFD6D9F8).copy(alpha = 0.85f)))
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(
+                        elevation = 8.dp,
+                        shape = heroShape,
+                        ambientColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.35f else 0.12f),
+                        spotColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.35f else 0.14f)
+                    )
+                    .clip(heroShape)
+                    .background(heroBrush)
+                    .border(1.dp, heroBorder, heroShape)
+                    .padding(horizontal = 20.dp, vertical = 22.dp)
+            ) {
+                // Frosted Liquid Glass Brand Emblem (76.dp container with soft ambient glow)
+                val logoContainerShape = RoundedCornerShape(22.dp)
+                val logoGlassBg = if (isDark) {
+                    Color(0xFF10172C).copy(alpha = 0.78f)
                 } else {
-                    Brush.linearGradient(
-                        listOf(
-                            Color(0xFFDCEEFF),
-                            Color(0xFFECE2FF),
-                            Color(0xFFF6F7FF)
-                        )
-                    )
+                    Color.White.copy(alpha = 0.80f)
                 }
-                val heroBorder = if (isDark) {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.24f), Color(0xFF60A5FA).copy(alpha = 0.22f)))
+                val logoGlassBorder = if (isDark) {
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.24f),
+                            Color(0xFF38BDF8).copy(alpha = 0.22f)
+                        )
+                    )
                 } else {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.96f), Color(0xFFD6D9F8).copy(alpha = 0.85f)))
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.96f),
+                            Color(0xFFD6E4FF).copy(alpha = 0.85f)
+                        )
+                    )
                 }
 
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(76.dp)
+                        .shadow(
+                            elevation = 12.dp,
+                            shape = logoContainerShape,
+                            ambientColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.42f else 0.22f),
+                            spotColor = Color(0xFF0EA5E9).copy(alpha = if (isDark) 0.38f else 0.18f)
+                        )
+                        .clip(logoContainerShape)
+                        .background(logoGlassBg)
+                        .border(1.dp, logoGlassBorder, logoContainerShape)
+                        .padding(8.dp)
+                        .testTag("about_brand_emblem")
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.aura_logo),
+                        contentDescription = "Aura Player Logo",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Aura Player",
+                    color = palette.primaryText,
+                    fontSize = 23.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "v${installedVersion} release",
+                    color = palette.secondaryText,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Two-line centered developer credit directly below app version
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .shadow(
-                            elevation = 8.dp,
-                            shape = heroShape,
-                            ambientColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.35f else 0.12f),
-                            spotColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.35f else 0.14f)
-                        )
-                        .clip(heroShape)
-                        .background(heroBrush)
-                        .border(1.dp, heroBorder, heroShape)
-                        .padding(horizontal = 20.dp, vertical = 22.dp)
+                    modifier = Modifier.testTag("about_developer_badge")
                 ) {
-                    // Frosted Liquid Glass Brand Emblem (84.dp container with soft ambient glow)
-                    val logoContainerShape = RoundedCornerShape(24.dp)
-                    val logoGlassBg = if (isDark) {
-                        Color(0xFF10172C).copy(alpha = 0.78f)
-                    } else {
-                        Color.White.copy(alpha = 0.80f)
-                    }
-                    val logoGlassBorder = if (isDark) {
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.24f),
-                                Color(0xFF38BDF8).copy(alpha = 0.22f)
-                            )
-                        )
-                    } else {
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.96f),
-                                Color(0xFFD6E4FF).copy(alpha = 0.85f)
-                            )
-                        )
-                    }
-
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(84.dp)
-                            .shadow(
-                                elevation = 14.dp,
-                                shape = logoContainerShape,
-                                ambientColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.42f else 0.22f),
-                                spotColor = Color(0xFF0EA5E9).copy(alpha = if (isDark) 0.38f else 0.18f)
-                            )
-                            .clip(logoContainerShape)
-                            .background(logoGlassBg)
-                            .border(1.dp, logoGlassBorder, logoContainerShape)
-                            .padding(8.dp)
-                            .testTag("about_brand_emblem")
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.aura_logo),
-                            contentDescription = "Aura Player Logo",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
                     Text(
-                        text = "Aura Player",
-                        color = palette.primaryText,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.ExtraBold
+                        text = "Developer: Khan Istiak Shahabuddin",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "v${installedVersion} release",
-                        color = palette.secondaryText,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
+                        text = "Made with ❤️ in Bangladesh",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center
                     )
+                }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                    // Highlighted Developer Credit Pill Badge
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(if (isDark) Color(0xFF283454) else Color(0xFFE3E6FA))
-                            .border(
-                                1.dp,
-                                AboutCobalt.copy(alpha = if (isDark) 0.50f else 0.30f),
-                                RoundedCornerShape(999.dp)
-                            )
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                            .testTag("about_developer_badge")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = null,
-                            tint = if (isDark) Color(0xFF93C5FD) else AboutCobalt,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "By Khan Istiak Shahabuddin",
-                            color = if (isDark) Color(0xFFDBEAFE) else AboutCobalt,
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        AboutActionPillButton(
-                            icon = Icons.Filled.Code,
-                            label = "Libraries",
-                            onClick = { activeModal = AboutModalType.LIBRARIES },
-                            testTag = "about_libraries_button"
-                        )
-                        AboutActionPillButton(
-                            icon = Icons.Filled.PrivacyTip,
-                            label = "Privacy Policy",
-                            onClick = { activeModal = AboutModalType.PRIVACY_POLICY },
-                            testTag = "about_privacy_button"
-                        )
-                        AboutActionPillButton(
-                            icon = Icons.Filled.SystemUpdate,
-                            label = if (isCheckingForUpdates) "Checking..." else "Check for Updates Now",
-                            isPrimary = true,
-                            isLoading = isCheckingForUpdates,
-                            onClick = {
-                                if (!isCheckingForUpdates) {
-                                    isCheckingForUpdates = true
-                                    coroutineScope.launch {
-                                        val result = updateManager.checkForUpdates()
-                                        isCheckingForUpdates = false
-                                        when (result) {
-                                            is UpdateCheckResult.UpdateAvailable -> {
-                                                availableUpdate = result.info
-                                            }
-                                            is UpdateCheckResult.UpToDate -> {
-                                                onShowCapsuleToast("You're on the latest version")
-                                            }
-                                            is UpdateCheckResult.Error -> {
-                                                onShowCapsuleToast("You're on the latest version")
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            testTag = "about_check_updates_button"
-                        )
-                    }
+                // Libraries & Privacy Policy pill row
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    AboutActionPillButton(
+                        icon = Icons.Filled.Code,
+                        label = "Libraries",
+                        onClick = { activeModal = AboutModalType.LIBRARIES },
+                        testTag = "about_libraries_button"
+                    )
+                    AboutActionPillButton(
+                        icon = Icons.Filled.PrivacyTip,
+                        label = "Privacy Policy",
+                        onClick = { activeModal = AboutModalType.PRIVACY_POLICY },
+                        testTag = "about_privacy_button"
+                    )
                 }
             }
 
-            // Device Info & | System Card
-            item(key = "system_info_card") {
-                val cardShape = RoundedCornerShape(18.dp)
-                val cardBg = if (isDark) Color(0xFF161B2E).copy(alpha = 0.80f) else Color.White.copy(alpha = 0.86f)
-                val borderBrush = if (isDark) {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), Color(0xFF60A5FA).copy(alpha = 0.14f)))
-                } else {
-                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.94f), Color(0xFFD6D9F8).copy(alpha = 0.72f)))
-                }
+            // Device & App Info Card (`| System & App`) — stretches cleanly to fill remaining viewport height
+            val cardShape = RoundedCornerShape(18.dp)
+            val cardBg = if (isDark) Color(0xFF161B2E).copy(alpha = 0.80f) else Color.White.copy(alpha = 0.86f)
+            val borderBrush = if (isDark) {
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), Color(0xFF60A5FA).copy(alpha = 0.14f)))
+            } else {
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.94f), Color(0xFFD6D9F8).copy(alpha = 0.72f)))
+            }
 
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "| System",
-                        color = if (isDark) Color(0xFFB7C5E8) else AboutSlateHeaderLight,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.4.sp,
-                        modifier = Modifier.padding(start = 6.dp, top = 4.dp, bottom = 6.dp)
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .shadow(
-                                elevation = 4.dp,
-                                shape = cardShape,
-                                ambientColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.28f else 0.06f),
-                                spotColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.28f else 0.08f)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                Text(
+                    text = "| System & App",
+                    color = if (isDark) Color(0xFFB7C5E8) else AboutSlateHeaderLight,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.4.sp,
+                    modifier = Modifier.padding(start = 6.dp, top = 2.dp, bottom = 6.dp)
+                )
+                Column(
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .shadow(
+                            elevation = 4.dp,
+                            shape = cardShape,
+                            ambientColor = Color(0xFF434A6E).copy(alpha = if (isDark) 0.28f else 0.06f),
+                            spotColor = Color(0xFF2563EB).copy(alpha = if (isDark) 0.28f else 0.08f)
+                        )
+                        .clip(cardShape)
+                        .background(cardBg)
+                        .border(1.dp, borderBrush, cardShape)
+                        .padding(vertical = 4.dp)
+                ) {
+                    systemSpecs.forEachIndexed { index, (label, value) ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(horizontal = 14.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(0.44f)
                             )
-                            .clip(cardShape)
-                            .background(cardBg)
-                            .border(1.dp, borderBrush, cardShape)
-                            .padding(vertical = 6.dp)
-                    ) {
-                        systemSpecs.forEachIndexed { index, (label, value) ->
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                            ) {
-                                Text(
-                                    text = label,
-                                    color = palette.secondaryText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.weight(0.46f)
-                                )
-                                Text(
-                                    text = value,
-                                    color = palette.primaryText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.End,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(0.54f)
-                                )
-                            }
-                            if (index < systemSpecs.lastIndex) {
-                                HorizontalDivider(
-                                    thickness = 1.dp,
-                                    color = if (isDark) Color.White.copy(alpha = 0.08f) else AboutDividerLight,
-                                    modifier = Modifier.padding(horizontal = 14.dp)
-                                )
-                            }
+                            Text(
+                                text = value,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(0.56f)
+                            )
+                        }
+                        if (index < systemSpecs.lastIndex) {
+                            HorizontalDivider(
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.14f),
+                                modifier = Modifier.padding(horizontal = 14.dp)
+                            )
                         }
                     }
                 }
@@ -614,42 +584,23 @@ private fun AboutDetailDialog(
 
 private fun collectLiveSystemSpecs(
     context: Context,
-    installedVersion: String
+    @Suppress("UNUSED_PARAMETER") installedVersion: String
 ): List<Pair<String, String>> {
-    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-    val memInfo = ActivityManager.MemoryInfo()
-    val ramFormatted = if (am != null) {
-        am.getMemoryInfo(memInfo)
-        val totalGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
-        if (totalGb > 0.0) String.format(Locale.US, "%.2f GB", totalGb) else "Unknown"
-    } else {
-        "Unknown"
-    }
-    val glEsVersion = runCatching {
-        am?.deviceConfigurationInfo?.glEsVersion?.takeIf { it.isNotBlank() }
-    }.getOrNull() ?: "3.2"
-
     val cpuAbi = Build.SUPPORTED_ABIS?.firstOrNull() ?: "arm64-v8a"
-    val cpuCores = Runtime.getRuntime().availableProcessors()
-    val kernel = System.getProperty("os.version") ?: "Linux"
-
     val hwVideoDecoderCount = countHardwareVideoDecoders()
 
     return listOf(
-        "App version" to "v${installedVersion} release",
+        "Package Name" to context.packageName.ifBlank { "com.istiak.auraplayer" },
+        "License" to "Open Source (Ad-Free)",
+        "Build Type" to "Release (Signed)",
         "Android version" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
         "Device brand" to Build.BRAND.replaceFirstChar { it.uppercase(Locale.US) },
         "Device manufacturer" to Build.MANUFACTURER,
         "Device model" to "${Build.MODEL} (${Build.DEVICE})",
-        "Playback Engine" to "AndroidX Media3 ExoPlayer 1.5.1",
+        "Playback Engine" to "Media3 ExoPlayer 1.5.1",
         "Audio Decoder" to "Bundled FFmpeg + MediaCodec",
-        "Hardware Video Codecs" to "$hwVideoDecoderCount HW Decoders",
-        "CPU ABI" to cpuAbi,
-        "CPU Cores" to "$cpuCores",
-        "RAM" to ramFormatted,
-        "OpenGL ES" to glEsVersion,
-        "Board" to Build.BOARD,
-        "Kernel" to kernel
+        "Hardware Video Decoders" to "$hwVideoDecoderCount HW Decoders",
+        "CPU ABI" to cpuAbi
     )
 }
 

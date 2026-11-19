@@ -958,14 +958,18 @@ fun DirectoryBrowserScreen(
                 .padding(top = measuredHeaderTopDp + 10.dp)
         ) {
             val primaryAccent = MaterialTheme.colorScheme.primary
+            val pillShape = RoundedCornerShape(50)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
-                    .shadow(8.dp, RoundedCornerShape(999.dp))
-                    .clip(RoundedCornerShape(999.dp))
+                    .clip(pillShape)
                     .background(if (isDark) palette.sheetBackground.copy(alpha = 0.94f) else Color.White.copy(alpha = 0.94f))
-                    .border(1.dp, primaryAccent.copy(alpha = 0.30f), RoundedCornerShape(999.dp))
+                    .border(
+                        width = 0.8.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                        shape = pillShape
+                    )
                     .padding(horizontal = 14.dp, vertical = 7.dp)
                     .testTag("library_updated_pill")
             ) {

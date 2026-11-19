@@ -46,9 +46,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
@@ -59,12 +57,10 @@ import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -157,43 +153,6 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
         return content.eval(samplePos);
     }
 """
-
-/**
- * AGSL fragment shader for subtle vertical RGB chromatic dispersion along the curved bottom
- * meniscus of full-width top headers on Android 13+ (API 33+), clipped strictly inside the
- * glass band with zero neon stripe.
- */
-private const val HEADER_MENISCUS_CHROMA_AGSL = """
-    uniform shader content;
-    uniform float2 resolution;
-    uniform float bandHeightPx;
-    uniform float chromaOffsetPx;
-
-    half4 main(float2 fragCoord) {
-        float2 maxCoord = max(resolution - float2(1.0), float2(1.0));
-        float distBottom = max(0.0, resolution.y - fragCoord.y);
-        float band = max(bandHeightPx, 1.0);
-        float edgeT = clamp(1.0 - (distBottom / band), 0.0, 1.0);
-        float falloff = edgeT * edgeT;
-        float dy = chromaOffsetPx * falloff;
-        if (dy > 0.02) {
-            half4 cR = content.eval(clamp(fragCoord - float2(0.0, dy), float2(0.0), maxCoord));
-            half4 cG = content.eval(clamp(fragCoord, float2(0.0), maxCoord));
-            half4 cB = content.eval(clamp(fragCoord + float2(0.0, dy), float2(0.0), maxCoord));
-            return half4(cR.r, cG.g, cB.b, cG.a);
-        }
-        return content.eval(clamp(fragCoord, float2(0.0), maxCoord));
-    }
-"""
-
-private class HeaderLensEffectCache {
-    var width: Float = -1f
-    var height: Float = -1f
-    var bandPx: Float = -1f
-    var chromaPx: Float = -1f
-    var colorMatrixValues: FloatArray? = null
-    var effect: androidx.compose.ui.graphics.RenderEffect? = null
-}
 
 /**
  * Shared real-time `GraphicsLayer` recording state for pure-Compose Frosted / Liquid Crystal surfaces.
@@ -563,17 +522,14 @@ fun rememberScrollAwareGlassLayout(
  * wrapping 100% of the header content (title row, action icons, and breadcrumb bar) inside a single
  * cut-to-cut [FrostedGlassSurface] spanning `0f` to `size.height`.
  * Driven live by [LocalLiquidGlassConfig]:
- * - Full-coverage `BlurEffect` and `palette.ambientTopLeft` tint run from `y = 0f` to `y = size.height`
- *   with zero bottom feather/fade mask.
- * - Renders the 3-part pill-matched Liquid Glass edge flush along `y = size.height`:
- *   1) sharp unblurred curved-lens rim refraction (`rimHeightPx` + subtle cool-crystal tint),
- *   2) razor-thin `1.dp` dual-tone glass rim line (`y = size.height - 1.dp` & `size.height - 0.5.dp`),
- *   3) soft `4.dp` outward depth shadow below `y = size.height`.
+ * - Full-coverage `BlurEffect` and `palette.ambientTopLeft` tint run 100% uniformly from `y = 0f`
+ *   to `y = size.height` with zero bottom fade, zero unblurred strip, and zero white edge line.
+ * - Ends cleanly at `y = size.height` with a whisper-subtle `0.5.dp` `outlineVariant` hairline
+ *   divider (`alpha = 0.22f * effectiveGlassProgress`).
  * - When `!config.enabled || !config.headerLiquidGlassEnabled`: stays completely transparent
  *   (`alpha = 0f`) at scroll rest (`effectiveGlassProgress == 0f`) so the root ambient gradient
  *   shows through uninterrupted, and smoothly fades in a soft tinted white/slate surface
- *   (`0.92f * effectiveGlassProgress`) with a subtle `1.dp` hairline divider (`0.35f * effectiveGlassProgress`)
- *   and crisp cut-to-cut bottom edge as the user scrolls.
+ *   (`0.92f * effectiveGlassProgress`) with the `0.5.dp` hairline divider as the user scrolls.
  */
 @Composable
 fun BoxScope.ScrollAwareFixedHeader(
@@ -611,7 +567,6 @@ fun BoxScope.ScrollAwareFixedHeader(
         shape = RoundedCornerShape(0.dp),
         border = null,
         blurRadius = blurRadius,
-        featherBottomEdge = false,
         isTopHeader = true,
         baseBackgroundColor = headerBaseBg,
         specularOverlayBrush = null,
@@ -945,47 +900,24 @@ fun FrostedGlassSurface(
         }
     }
 
-    val depthOuterModifier = when {
-        isFullWidthHeader &&
-            isLiveGlassActive &&
-            effectiveGlassProgress > 0.01f -> {
-            // Soft Outward Depth Shadow (4.dp below y = size.height)
-            Modifier.drawBehind {
-                val shadowHeightPx = 4.dp.toPx()
-                val shadowAlpha = ((if (glassConfig.depthEffect) 0.12f else 0.06f) * effectiveGlassProgress)
-                    .coerceIn(0f, 0.25f)
-                val shadowStartColor = if (isDarkHeader) {
-                    Color.Black.copy(alpha = (shadowAlpha * 2.2f).coerceIn(0f, 0.40f))
-                } else {
-                    Color(0xFF0F172A).copy(alpha = shadowAlpha)
-                }
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(shadowStartColor, Color.Transparent),
-                        startY = size.height,
-                        endY = size.height + shadowHeightPx
-                    ),
-                    topLeft = Offset(0f, size.height),
-                    size = Size(size.width, shadowHeightPx)
-                )
-            }
-        }
+    val depthOuterModifier = if (
         isLiveGlassActive &&
-            glassConfig.depthEffect &&
-            !isFullWidthHeader &&
-            effectiveGlassProgress > 0.05f -> {
-            Modifier.crystalOuterShadow(
-                shape = shape,
-                color = if (isDarkHeader) {
-                    Color.Black.copy(alpha = 0.50f * effectiveGlassProgress)
-                } else {
-                    Color(0xFF0F172A).copy(alpha = 0.22f * effectiveGlassProgress)
-                },
-                blurSpread = 18.dp,
-                offsetY = 6.dp
-            )
-        }
-        else -> Modifier
+        glassConfig.depthEffect &&
+        !isFullWidthHeader &&
+        effectiveGlassProgress > 0.05f
+    ) {
+        Modifier.crystalOuterShadow(
+            shape = shape,
+            color = if (isDarkHeader) {
+                Color.Black.copy(alpha = 0.50f * effectiveGlassProgress)
+            } else {
+                Color(0xFF0F172A).copy(alpha = 0.22f * effectiveGlassProgress)
+            },
+            blurSpread = 18.dp,
+            offsetY = 6.dp
+        )
+    } else {
+        Modifier
     }
 
     Box(
@@ -1011,24 +943,18 @@ fun FrostedGlassSurface(
                 modifier = Modifier.matchParentSize()
             ) {
                 if ((!isLiveGlassActive && isFullWidthHeader) || isSolidFallbackCapsule) {
-                    // Scroll-aware soft tinted surface (cut-to-cut + subtle 1.dp hairline)
+                    // Scroll-aware soft tinted surface (cut-to-cut + subtle 0.5.dp outlineVariant hairline)
                     // or solid primary Play button when Liquid Glass is OFF
                     Box(
                         modifier = Modifier
                             .matchParentSize()
                             .drawBehind {
                                 drawRect(color = activeBaseBackgroundColor)
-                                if (isFullWidthHeader) {
-                                    val strokePx = 1.dp.toPx()
-                                    val hairlineColor = if (isDarkHeader) {
-                                        Color(0xFF334155).copy(
-                                            alpha = (0.35f * effectiveGlassProgress).coerceIn(0f, 1f)
-                                        )
-                                    } else {
-                                        Color(0xFFCBD5E1).copy(
-                                            alpha = (0.35f * effectiveGlassProgress).coerceIn(0f, 1f)
-                                        )
-                                    }
+                                if (isFullWidthHeader && effectiveGlassProgress > 0.01f) {
+                                    val strokePx = 0.5.dp.toPx()
+                                    val hairlineColor = outlineVariant.copy(
+                                        alpha = (0.22f * effectiveGlassProgress).coerceIn(0f, 1f)
+                                    )
                                     drawLine(
                                         color = hairlineColor,
                                         start = Offset(0f, size.height - strokePx * 0.5f),
@@ -1092,8 +1018,8 @@ fun FrostedGlassSurface(
                                 val layerH = size.height
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                     // Top headers always use full-width BlurEffect without AGSL RuntimeShader
-                                    // so the blur spans 100% of screen width uniformly with zero seam or color splitting.
-                                    val canUseAgsl = !isTopHeader &&
+                                    // so the blur spans 100% of screen width and height uniformly with zero seam.
+                                    val canUseAgsl = !isFullWidthHeader &&
                                         isLiveGlassActive &&
                                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                                         agslRuntimeShader != null &&
@@ -1233,202 +1159,9 @@ fun FrostedGlassSurface(
                             }
                     )
 
-                    // 1. Sharp Curved-Lens Rim Refraction (`refractionEdgeWidth` & `refractionStrength`):
-                    // Clips strictly to Rect(0f, size.height - rimHeightPx, size.width, size.height) and draws the
-                    // unblurred (sharp, crisp) activeContentLayer translated by (dx, dy) with vertical lens compression
-                    // (scaleY = 1f + 0.18f * refractionStrength * effectiveGlassProgress), overlaid with a subtle
-                    // cool-crystal tint so the bottom rim matches the pill capsule's thick curved-glass edge.
-                    if (
-                        isFullWidthHeader &&
-                        isLiveGlassActive &&
-                        effectiveGlassProgress > 0.01f &&
-                        refractionStrengthNorm > 0.01f &&
-                        glassConfig.refractionEdgeWidth > 0.01f
-                    ) {
-                        val rimHeightTargetPx = with(density) {
-                            (10.dp * glassConfig.refractionEdgeWidth.coerceIn(0f, 2f))
-                                .coerceIn(5.dp, 20.dp)
-                                .toPx()
-                        }
-                        val quantizedChromaPx = if (glassConfig.chromaticAberration) {
-                            val rawChroma = with(density) {
-                                (0.8.dp * refractionStrengthNorm * effectiveGlassProgress).toPx()
-                            }
-                            ((rawChroma * 4f).toInt() / 4f).coerceAtLeast(0f)
-                        } else {
-                            0f
-                        }
-
-                        val headerChromaShader = remember {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                runCatching { RuntimeShader(HEADER_MENISCUS_CHROMA_AGSL) }.getOrNull()
-                            } else {
-                                null
-                            }
-                        }
-                        val headerLensEffectCache = remember { HeaderLensEffectCache() }
-                        val colorOnlyEffect = remember(backdropComposeMatrix) {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                backdropComposeMatrix?.let { cm ->
-                                    android.graphics.RenderEffect.createColorFilterEffect(
-                                        android.graphics.ColorMatrixColorFilter(
-                                            android.graphics.ColorMatrix(cm.values)
-                                        )
-                                    ).asComposeRenderEffect()
-                                }
-                            } else {
-                                null
-                            }
-                        }
-
-                        val coolCrystalTint = if (isDarkHeader) {
-                            Color(0xFF1E293B).copy(alpha = 0.18f * effectiveGlassProgress)
-                        } else {
-                            Color(0xFFEFF6FF).copy(alpha = 0.14f * effectiveGlassProgress)
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clipToBounds()
-                                .graphicsLayer {
-                                    alpha = layerBackdropAlpha
-                                    val layerW = size.width
-                                    val layerH = size.height
-                                    if (
-                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                        headerChromaShader != null &&
-                                        quantizedChromaPx > 0.05f &&
-                                        layerW > 1f &&
-                                        layerH > 1f
-                                    ) {
-                                        val clampedBandPx = rimHeightTargetPx.coerceAtMost(layerH)
-                                        val matrixValues = backdropComposeMatrix?.values
-                                        if (
-                                            headerLensEffectCache.width != layerW ||
-                                            headerLensEffectCache.height != layerH ||
-                                            headerLensEffectCache.bandPx != clampedBandPx ||
-                                            headerLensEffectCache.chromaPx != quantizedChromaPx ||
-                                            headerLensEffectCache.colorMatrixValues !== matrixValues
-                                        ) {
-                                            headerLensEffectCache.width = layerW
-                                            headerLensEffectCache.height = layerH
-                                            headerLensEffectCache.bandPx = clampedBandPx
-                                            headerLensEffectCache.chromaPx = quantizedChromaPx
-                                            headerLensEffectCache.colorMatrixValues = matrixValues
-                                            headerLensEffectCache.effect = runCatching {
-                                                headerChromaShader.setFloatUniform("resolution", layerW, layerH)
-                                                headerChromaShader.setFloatUniform("bandHeightPx", clampedBandPx)
-                                                headerChromaShader.setFloatUniform("chromaOffsetPx", quantizedChromaPx)
-                                                val shaderEffect = android.graphics.RenderEffect.createRuntimeShaderEffect(
-                                                    headerChromaShader,
-                                                    "content"
-                                                )
-                                                val colorFilterEffect = backdropComposeMatrix?.let { cm ->
-                                                    android.graphics.RenderEffect.createColorFilterEffect(
-                                                        android.graphics.ColorMatrixColorFilter(
-                                                            android.graphics.ColorMatrix(cm.values)
-                                                        )
-                                                    )
-                                                }
-                                                val finalEffect = if (colorFilterEffect != null) {
-                                                    android.graphics.RenderEffect.createChainEffect(
-                                                        colorFilterEffect,
-                                                        shaderEffect
-                                                    )
-                                                } else {
-                                                    shaderEffect
-                                                }
-                                                finalEffect.asComposeRenderEffect()
-                                            }.getOrNull()
-                                        }
-                                        renderEffect = headerLensEffectCache.effect ?: colorOnlyEffect
-                                    } else {
-                                        renderEffect = colorOnlyEffect
-                                    }
-                                }
-                                .drawBehind {
-                                    when (val scrollState = backdropState?.lazyListState) {
-                                        is LazyListState -> {
-                                            scrollState.firstVisibleItemIndex
-                                            scrollState.firstVisibleItemScrollOffset
-                                        }
-                                        is LazyGridState -> {
-                                            scrollState.firstVisibleItemIndex
-                                            scrollState.firstVisibleItemScrollOffset
-                                        }
-                                        is ScrollState -> {
-                                            scrollState.value
-                                        }
-                                    }
-
-                                    val rimHeightPx = (10.dp.toPx() * glassConfig.refractionEdgeWidth.coerceIn(0f, 2f))
-                                        .coerceIn(5.dp.toPx(), 20.dp.toPx())
-                                        .coerceAtMost(size.height)
-                                    val rimTopY = (size.height - rimHeightPx).coerceAtLeast(0f)
-
-                                    if (size.height > 1f && rimHeightPx > 0.5f) {
-                                        val bgLayer = backdropState?.backgroundGraphicsLayer
-                                        val candidateLayer = contentLayerOverride ?: backdropState?.activeContentLayer
-                                        val isLayerValid = if (contentLayerOverride != null) {
-                                            backdropState == null || backdropState.hasRecordedContent
-                                        } else {
-                                            backdropState != null &&
-                                                backdropState.hasRecordedContent &&
-                                                candidateLayer != null
-                                        }
-                                        val lensScaleY = 1f + (0.18f * refractionStrengthNorm * effectiveGlassProgress)
-
-                                        drawIntoCanvas { canvas ->
-                                            canvas.save()
-                                            canvas.clipRect(
-                                                left = 0f,
-                                                top = rimTopY,
-                                                right = size.width,
-                                                bottom = size.height
-                                            )
-                                            drawRect(
-                                                brush = ambientFallbackBrush,
-                                                topLeft = Offset(0f, rimTopY),
-                                                size = Size(size.width, size.height - rimTopY)
-                                            )
-                                            if (candidateLayer != null && isLayerValid) {
-                                                val contentOrigin = backdropState?.backdropRootOffset ?: Offset.Zero
-                                                val dx = contentOrigin.x - surfaceRootOffset.x
-                                                val dy = contentOrigin.y - surfaceRootOffset.y
-                                                scale(
-                                                    scaleX = 1f,
-                                                    scaleY = lensScaleY,
-                                                    pivot = Offset(size.width * 0.5f, size.height)
-                                                ) {
-                                                    if (bgLayer != null) {
-                                                        val bgOrigin = backdropState.backgroundOriginInRoot
-                                                        val bgDx = bgOrigin.x - surfaceRootOffset.x
-                                                        val bgDy = bgOrigin.y - surfaceRootOffset.y
-                                                        translate(left = bgDx, top = bgDy) {
-                                                            drawLayer(bgLayer)
-                                                        }
-                                                    }
-                                                    translate(left = dx, top = dy) {
-                                                        drawLayer(candidateLayer)
-                                                    }
-                                                }
-                                            }
-                                            drawRect(
-                                                color = coolCrystalTint,
-                                                topLeft = Offset(0f, rimTopY),
-                                                size = Size(size.width, size.height - rimTopY)
-                                            )
-                                            canvas.restore()
-                                        }
-                                    }
-                                }
-                        )
-                    }
-
                     // Uniform edge-to-edge Liquid Glass sheen overlay (closed capsules or explicit custom brush only;
                     // ScrollAwareFixedHeader has zero white overlay gradient)
-                    if (isLiveGlassActive && (!isTopHeader || specularOverlayBrush != null)) {
+                    if (isLiveGlassActive && (!isFullWidthHeader || specularOverlayBrush != null)) {
                         val overlayBrushToUse = specularOverlayBrush ?: capsuleOverlayBrush
                         Box(
                             modifier = Modifier
@@ -1442,8 +1175,28 @@ fun FrostedGlassSurface(
                     }
                 }
 
-                // Unified Liquid Glass Edge Reflection & Optical Rim (both full-width headers & closed pills)
-                if (
+                // Header bottom edge: whisper-subtle 0.5.dp outlineVariant hairline flush at y = size.height.
+                // Closed capsules retain full perimeter Liquid Glass optical rim reflection.
+                if (isFullWidthHeader) {
+                    if (isLiveGlassActive && effectiveGlassProgress > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .drawBehind {
+                                    val strokePx = 0.5.dp.toPx()
+                                    val lineY = (size.height - strokePx * 0.5f).coerceAtLeast(strokePx * 0.5f)
+                                    drawLine(
+                                        color = outlineVariant.copy(
+                                            alpha = (0.22f * effectiveGlassProgress).coerceIn(0f, 1f)
+                                        ),
+                                        start = Offset(0f, lineY),
+                                        end = Offset(size.width, lineY),
+                                        strokeWidth = strokePx
+                                    )
+                                }
+                        )
+                    }
+                } else if (
                     isLiveGlassActive &&
                     effectiveGlassProgress > 0.01f &&
                     (
@@ -1458,15 +1211,12 @@ fun FrostedGlassSurface(
                             .matchParentSize()
                             .drawBehind {
                                 drawLiquidGlassEdgeReflection(
-                                    isFullWidthHeader = isFullWidthHeader,
                                     glassConfig = glassConfig,
                                     isDarkHeader = isDarkHeader,
                                     effectiveGlassProgress = effectiveGlassProgress,
                                     refractionEdgeWidthPx = refractionEdgeWidthPx,
                                     refractionStrengthNorm = refractionStrengthNorm,
                                     highlightStrengthNorm = highlightStrengthNorm,
-                                    highlightWidthNorm = highlightWidthNorm,
-                                    highlightSoftnessNorm = highlightSoftnessNorm,
                                     approxCornerRadiusPx = approxCornerRadiusPx
                                 )
                             }
@@ -1481,24 +1231,17 @@ fun FrostedGlassSurface(
 }
 
 /**
- * Shared optical Liquid Glass rim reflection rendered on BOTH full-width top headers
- * (`ScrollAwareFixedHeader`) and closed floating capsules (`LiquidGlassBottomNavPill`):
- * - For full-width headers: razor-thin `1.dp` dual-tone glass rim line along `y = size.height`
- *   (with zero opaque/white gradient band):
- *   - `y = size.height - 1.dp`: `1.dp` crisp specular catchlight
- *   - `y = size.height - 0.5.dp`: `0.75.dp` delicate cool-slate/sky glass edge line
- * - For closed capsules: ambient depth occlusion, dual-tone caustic rim, and optional chromatic dispersion.
+ * Optical Liquid Glass perimeter reflection rendered on closed floating capsules
+ * (`LiquidGlassBottomNavPill`, floating buttons, etc.): ambient depth occlusion,
+ * dual-tone caustic rim, and optional chromatic dispersion.
  */
 private fun DrawScope.drawLiquidGlassEdgeReflection(
-    isFullWidthHeader: Boolean,
     glassConfig: LiquidGlassConfig,
     isDarkHeader: Boolean,
     effectiveGlassProgress: Float,
     refractionEdgeWidthPx: Float,
     refractionStrengthNorm: Float,
     highlightStrengthNorm: Float,
-    highlightWidthNorm: Float,
-    highlightSoftnessNorm: Float,
     approxCornerRadiusPx: Float
 ) {
     val w = size.width
@@ -1507,115 +1250,64 @@ private fun DrawScope.drawLiquidGlassEdgeReflection(
     val cornerR = approxCornerRadiusPx.coerceAtMost(minOf(w, h) * 0.5f)
     val edgeBand = refractionEdgeWidthPx.coerceIn(1.dp.toPx(), minOf(w, h) * 0.45f)
 
-    if (isFullWidthHeader) {
-        if (highlightStrengthNorm > 0.01f) {
-            val styleAlphaMul = when (glassConfig.highlightStyle) {
-                HighlightStyle.MINIMAL -> 0.45f
-                HighlightStyle.TOP_SHEEN -> 0.85f
-                HighlightStyle.SPECULAR_RIM -> 1.15f
-                HighlightStyle.COMPONENT_DEFAULT -> 1.0f
-            }
+    if (glassConfig.depthEffect) {
+        val aoAlpha = (if (isDarkHeader) 0.40f else 0.16f) * effectiveGlassProgress
+        val aoStroke = (3.5.dp.toPx() + edgeBand * 0.15f).coerceAtMost(10.dp.toPx())
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                0.0f to Color.Black.copy(alpha = aoAlpha * 0.85f),
+                0.45f to Color.Black.copy(alpha = aoAlpha * 0.18f),
+                1.0f to Color.White.copy(alpha = aoAlpha * 0.55f)
+            ),
+            cornerRadius = CornerRadius(cornerR, cornerR),
+            style = Stroke(width = aoStroke)
+        )
+    }
 
-            // Razor-thin 1.dp specular catchlight at y = size.height - 1.dp
-            val catchlightStrokePx = 1.dp.toPx()
-            val catchlightAlpha = if (isDarkHeader) {
-                (0.24f * highlightStrengthNorm * styleAlphaMul * effectiveGlassProgress).coerceIn(0f, 0.40f)
-            } else {
-                (0.42f * highlightStrengthNorm * styleAlphaMul * effectiveGlassProgress).coerceIn(0f, 0.55f)
-            }
-            if (catchlightAlpha > 0.005f) {
-                val catchlightY = (h - 1.dp.toPx()).coerceAtLeast(catchlightStrokePx * 0.5f)
-                drawLine(
-                    color = Color.White.copy(alpha = catchlightAlpha),
-                    start = Offset(0f, catchlightY),
-                    end = Offset(w, catchlightY),
-                    strokeWidth = catchlightStrokePx
-                )
-            }
+    if (refractionStrengthNorm > 0.02f && glassConfig.refractionEdgeWidth > 0.02f) {
+        val causticAlpha = (0.20f * refractionStrengthNorm * effectiveGlassProgress)
+            .coerceIn(0f, 0.42f)
+        val rimStroke = (edgeBand * 0.32f).coerceIn(1.dp.toPx(), 6.dp.toPx())
+        drawRoundRect(
+            brush = Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = causticAlpha),
+                    Color.Transparent,
+                    Color.White.copy(alpha = causticAlpha * 0.8f)
+                ),
+                start = Offset.Zero,
+                end = Offset(w, h)
+            ),
+            cornerRadius = CornerRadius(cornerR, cornerR),
+            style = Stroke(width = rimStroke)
+        )
+    }
 
-            // Delicate 0.75.dp cool-slate glass edge line at y = size.height - 0.5.dp
-            val edgeStrokePx = 0.75.dp.toPx()
-            val edgeAlpha = if (isDarkHeader) {
-                (0.20f * highlightStrengthNorm * styleAlphaMul * effectiveGlassProgress).coerceIn(0f, 0.35f)
-            } else {
-                (0.26f * highlightStrengthNorm * styleAlphaMul * effectiveGlassProgress).coerceIn(0f, 0.40f)
-            }
-            val edgeColor = if (isDarkHeader) {
-                Color(0xFF93C5FD).copy(alpha = edgeAlpha)
-            } else {
-                Color(0xFF94A3B8).copy(alpha = edgeAlpha)
-            }
-            if (edgeAlpha > 0.005f) {
-                val edgeY = (h - 0.5.dp.toPx()).coerceAtLeast(edgeStrokePx * 0.5f)
-                drawLine(
-                    color = edgeColor,
-                    start = Offset(0f, edgeY),
-                    end = Offset(w, edgeY),
-                    strokeWidth = edgeStrokePx
-                )
-            }
-        }
-    } else {
-        // Closed capsule perimeter effects (Bottom Navigation Pill & floating capsules)
-        if (glassConfig.depthEffect) {
-            val aoAlpha = (if (isDarkHeader) 0.40f else 0.16f) * effectiveGlassProgress
-            val aoStroke = (3.5.dp.toPx() + edgeBand * 0.15f).coerceAtMost(10.dp.toPx())
-            drawRoundRect(
-                brush = Brush.verticalGradient(
-                    0.0f to Color.Black.copy(alpha = aoAlpha * 0.85f),
-                    0.45f to Color.Black.copy(alpha = aoAlpha * 0.18f),
-                    1.0f to Color.White.copy(alpha = aoAlpha * 0.55f)
-                ),
-                cornerRadius = CornerRadius(cornerR, cornerR),
-                style = Stroke(width = aoStroke)
-            )
-        }
-
-        if (refractionStrengthNorm > 0.02f && glassConfig.refractionEdgeWidth > 0.02f) {
-            val causticAlpha = (0.20f * refractionStrengthNorm * effectiveGlassProgress)
-                .coerceIn(0f, 0.42f)
-            val rimStroke = (edgeBand * 0.32f).coerceIn(1.dp.toPx(), 6.dp.toPx())
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = causticAlpha),
-                        Color.Transparent,
-                        Color.White.copy(alpha = causticAlpha * 0.8f)
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(w, h)
-                ),
-                cornerRadius = CornerRadius(cornerR, cornerR),
-                style = Stroke(width = rimStroke)
-            )
-        }
-
-        if (glassConfig.chromaticAberration && (refractionStrengthNorm > 0.05f || highlightStrengthNorm > 0.05f)) {
-            val dispAlpha = (0.32f * (0.4f + 0.6f * refractionStrengthNorm) * effectiveGlassProgress)
-                .coerceIn(0f, 0.62f)
-            val dispWidth = (1.5.dp.toPx() * (0.6f + 0.4f * glassConfig.refractionEdgeWidth))
-                .coerceIn(0.8.dp.toPx(), 4.dp.toPx())
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    0.0f to Color(0xFFFF6B9E).copy(alpha = dispAlpha),
-                    0.22f to Color(0xFFF59E0B).copy(alpha = dispAlpha * 0.55f),
-                    0.50f to Color.Transparent,
-                    0.78f to Color(0xFF22D3EE).copy(alpha = dispAlpha * 0.65f),
-                    1.0f to Color(0xFF38BDF8).copy(alpha = dispAlpha),
-                    start = Offset.Zero,
-                    end = Offset(w, h)
-                ),
-                topLeft = Offset(dispWidth * 0.5f, dispWidth * 0.5f),
-                size = Size(
-                    (w - dispWidth).coerceAtLeast(1f),
-                    (h - dispWidth).coerceAtLeast(1f)
-                ),
-                cornerRadius = CornerRadius(
-                    (cornerR - dispWidth * 0.5f).coerceAtLeast(0f),
-                    (cornerR - dispWidth * 0.5f).coerceAtLeast(0f)
-                ),
-                style = Stroke(width = dispWidth)
-            )
-        }
+    if (glassConfig.chromaticAberration && (refractionStrengthNorm > 0.05f || highlightStrengthNorm > 0.05f)) {
+        val dispAlpha = (0.32f * (0.4f + 0.6f * refractionStrengthNorm) * effectiveGlassProgress)
+            .coerceIn(0f, 0.62f)
+        val dispWidth = (1.5.dp.toPx() * (0.6f + 0.4f * glassConfig.refractionEdgeWidth))
+            .coerceIn(0.8.dp.toPx(), 4.dp.toPx())
+        drawRoundRect(
+            brush = Brush.linearGradient(
+                0.0f to Color(0xFFFF6B9E).copy(alpha = dispAlpha),
+                0.22f to Color(0xFFF59E0B).copy(alpha = dispAlpha * 0.55f),
+                0.50f to Color.Transparent,
+                0.78f to Color(0xFF22D3EE).copy(alpha = dispAlpha * 0.65f),
+                1.0f to Color(0xFF38BDF8).copy(alpha = dispAlpha),
+                start = Offset.Zero,
+                end = Offset(w, h)
+            ),
+            topLeft = Offset(dispWidth * 0.5f, dispWidth * 0.5f),
+            size = Size(
+                (w - dispWidth).coerceAtLeast(1f),
+                (h - dispWidth).coerceAtLeast(1f)
+            ),
+            cornerRadius = CornerRadius(
+                (cornerR - dispWidth * 0.5f).coerceAtLeast(0f),
+                (cornerR - dispWidth * 0.5f).coerceAtLeast(0f)
+            ),
+            style = Stroke(width = dispWidth)
+        )
     }
 }

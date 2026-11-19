@@ -139,14 +139,6 @@ data class SubtitleTrackUiModel(
     val isSelected: Boolean
 )
 
-data class SubtitleStyleConfig(
-    val fontSizeSp: Float = 18f,
-    val isBold: Boolean = false,
-    val textColorArgb: Int = android.graphics.Color.WHITE,
-    val hasBackground: Boolean = true,
-    val bottomMarginFraction: Float = 0.08f
-)
-
 enum class EqPreset(val label: String, val bandsDb: List<Float>) {
     CUSTOM("Custom", listOf(0f, 0f, 0f, 0f, 0f)),
     NORMAL("Normal", listOf(0f, 0f, 0f, 0f, 0f)),
@@ -179,13 +171,13 @@ fun RightSidePlayerDrawer(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    val drawerWidth = if (isLandscape) 340.dp else 290.dp
+    val drawerWidth = if (isLandscape) 320.dp else 300.dp
     val drawerGradient = remember {
         Brush.horizontalGradient(
             0.00f to Color.Black.copy(alpha = 0.0f),
-            0.14f to Color.Black.copy(alpha = 0.42f),
-            0.38f to Color.Black.copy(alpha = 0.62f),
-            1.00f to Color(0xFF0B0F19).copy(alpha = 0.86f)
+            0.10f to Color(0x990B101B),
+            0.28f to Color(0xCC0B101B),
+            1.00f to Color(0xCC0B101B)
         )
     }
 
@@ -603,13 +595,16 @@ fun AudioTrackDrawerContent(
 }
 
 /**
- * MX Player-Style Subtitle Side Panel (`PlayerDrawerType.SUBTITLE`):
- * - Bold `Subtitle` header (`18.sp`, `FontWeight.SemiBold`, `Color.White`)
- * - Scrollable track list with Rounded Square Checkboxes (`RoundedCornerShape(4.dp)`, `#38BDF8` fill when checked)
- * - Bottom Action & Stepper Rows separated by thin `0.6.dp` divider:
- *   `Open`, `Online subtitles`, `Subtitle Style / Appearance`, `Synchronization` (`±0.1s`), and `Speed` (`±0.5%`).
+ * Two-Level Translucent Right-Side `Subtitle` & `← Subtitles Customization` Drawer (`PlayerDrawerType.SUBTITLE`):
+ * - **Level 1 — `Subtitle` Main Menu:**
+ *   - Track selector list (embedded & external `.srt`/`.ass`/`.vtt` tracks + `Disable` option)
+ *   - `Open` (file picker to load external `.srt`, `.ass`, `.ssa`, `.vtt` subtitle files)
+ *   - `Online subtitles` search option
+ *   - `Synchronization` stepper row (`-`, `0.0s`, `+` in steps of `±0.1s`)
+ *   - `Speed` stepper row (`-`, `100.0%`, `+` in steps of `±0.5%`)
+ *   - `Panel` -> `Customization` row that transitions to Level 2
+ * - **Level 2 — `← Subtitles Customization` Sub-Panel (`SubtitlesCustomizationSubPanel`)**
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SubtitleDrawerContent(
     tracks: List<SubtitleTrackUiModel>,
@@ -624,9 +619,20 @@ fun SubtitleDrawerContent(
     onAdjustSubtitleSyncMs: (Long) -> Unit,
     onAdjustSubtitleSpeed: (Float) -> Unit,
     onUpdateStyleConfig: (SubtitleStyleConfig) -> Unit,
+    onResetStyleConfig: () -> Unit = { onUpdateStyleConfig(SubtitleStyleConfig.Default) },
     onClose: () -> Unit
 ) {
-    var showStyleSection by remember { mutableStateOf(false) }
+    var isCustomizationOpen by remember { mutableStateOf(false) }
+
+    if (isCustomizationOpen) {
+        SubtitlesCustomizationSubPanel(
+            styleConfig = styleConfig,
+            onUpdateStyleConfig = onUpdateStyleConfig,
+            onResetToDefault = onResetStyleConfig,
+            onNavigateBack = { isCustomizationOpen = false }
+        )
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -697,121 +703,13 @@ fun SubtitleDrawerContent(
                     style = TextStyle(shadow = MxTextDropShadow)
                 )
             }
-
-            // Expandable inline Subtitle Style / Appearance customization controls
-            AnimatedVisibility(
-                visible = showStyleSection,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.08f))
-                        .border(0.6.dp, MxDrawerDividerColor, RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = "Font Size (${styleConfig.fontSizeSp.toInt()}sp)",
-                        color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 12.sp
-                    )
-                    Slider(
-                        value = styleConfig.fontSizeSp,
-                        onValueChange = { onUpdateStyleConfig(styleConfig.copy(fontSizeSp = it)) },
-                        valueRange = 12f..32f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = MxSkyBlueActive,
-                            activeTrackColor = MxSkyBlueActive,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.22f)
-                        )
-                    )
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Bold Text", color = Color.White.copy(alpha = 0.88f), fontSize = 12.5.sp)
-                        Switch(
-                            checked = styleConfig.isBold,
-                            onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(isBold = it)) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = MxSkyBlueActive
-                            )
-                        )
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Shadow Background", color = Color.White.copy(alpha = 0.88f), fontSize = 12.5.sp)
-                        Switch(
-                            checked = styleConfig.hasBackground,
-                            onCheckedChange = { onUpdateStyleConfig(styleConfig.copy(hasBackground = it)) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = MxSkyBlueActive
-                            )
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Text Color", color = Color.White.copy(alpha = 0.82f), fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        listOf(
-                            android.graphics.Color.WHITE,
-                            android.graphics.Color.YELLOW,
-                            android.graphics.Color.CYAN,
-                            android.graphics.Color.GREEN
-                        ).forEach { colorArgb ->
-                            val isSelected = styleConfig.textColorArgb == colorArgb
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(colorArgb))
-                                    .border(
-                                        width = if (isSelected) 2.5.dp else 1.dp,
-                                        color = if (isSelected) MxSkyBlueActive else Color.White.copy(alpha = 0.4f),
-                                        shape = CircleShape
-                                    )
-                                    .clickable { onUpdateStyleConfig(styleConfig.copy(textColorArgb = colorArgb)) }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Bottom Margin (${(styleConfig.bottomMarginFraction * 100).toInt()}%)",
-                        color = Color.White.copy(alpha = 0.82f),
-                        fontSize = 12.sp
-                    )
-                    Slider(
-                        value = styleConfig.bottomMarginFraction,
-                        onValueChange = { onUpdateStyleConfig(styleConfig.copy(bottomMarginFraction = it)) },
-                        valueRange = 0.02f..0.28f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = MxSkyBlueActive,
-                            activeTrackColor = MxSkyBlueActive,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.22f)
-                        )
-                    )
-                }
-            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
         HorizontalDivider(thickness = 0.6.dp, color = MxDrawerDividerColor)
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Bottom Action & Stepper Rows: Open, Online subtitles, Subtitle Style, Synchronization, Speed
+        // Open external subtitle file (.srt, .ass, .ssa, .vtt)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -848,29 +746,6 @@ fun SubtitleDrawerContent(
             )
         }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { showStyleSection = !showStyleSection }
-                .padding(vertical = 9.dp, horizontal = 4.dp)
-                .testTag("drawer_subtitle_style_row")
-        ) {
-            Text(
-                text = "Subtitle Style / Appearance",
-                color = Color.White,
-                fontSize = 14.sp,
-                style = TextStyle(shadow = MxTextDropShadow)
-            )
-            Text(
-                text = "${styleConfig.fontSizeSp.toInt()}sp",
-                color = Color.White.copy(alpha = 0.72f),
-                fontSize = 12.5.sp
-            )
-        }
-
         val subSyncSec = subtitleSyncOffsetMs / 1000.0
         MxInlineStepperRow(
             label = "Synchronization",
@@ -900,6 +775,41 @@ fun SubtitleDrawerContent(
             incrementTag = "subtitle_speed_plus",
             badgeTag = "subtitle_speed_value"
         )
+
+        Spacer(modifier = Modifier.height(4.dp))
+        HorizontalDivider(thickness = 0.6.dp, color = MxDrawerDividerColor)
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Panel -> Customization Row (Opens Level 2 SubtitlesCustomizationSubPanel)
+        Text(
+            text = "Panel",
+            color = MxSkyBlueActive,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { isCustomizationOpen = true }
+                .padding(vertical = 9.dp, horizontal = 4.dp)
+                .testTag("drawer_subtitle_customization_row")
+        ) {
+            Text(
+                text = "Customization",
+                color = Color.White,
+                fontSize = 14.sp,
+                style = TextStyle(shadow = MxTextDropShadow)
+            )
+            Text(
+                text = "${styleConfig.fontSizeSp}sp • Margin ${styleConfig.bottomMargin}",
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 12.sp
+            )
+        }
     }
 }
 
