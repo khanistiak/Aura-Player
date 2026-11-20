@@ -1785,11 +1785,13 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Auto-hide HUD controls after 3.5s of inactivity
+    // Auto-hide HUD controls after 3.5s of inactivity (pauses while dragging volume/brightness sliders)
     LaunchedEffect(
         isControlsVisible,
         isPlaying,
         isScrubbing,
+        leftEdgeVolumeVisible,
+        rightEdgeBrightnessVisible,
         lastInteractionTick,
         activeDrawer,
         showSpeedBar,
@@ -1804,6 +1806,8 @@ fun VideoPlayerScreen(
             isControlsVisible &&
             isPlaying &&
             !isScrubbing &&
+            !leftEdgeVolumeVisible &&
+            !rightEdgeBrightnessVisible &&
             activeDrawer == PlayerDrawerType.NONE &&
             !showDecoderDialog &&
             !showSleepTimerDialog &&
@@ -2130,6 +2134,7 @@ fun VideoPlayerScreen(
                         }
                         if (gestureType == ActiveGestureType.BRIGHTNESS) {
                             rightEdgeBrightnessVisible = false
+                            lastInteractionTick++
                             if (latestSettings.brightnessMemoryMode != BrightnessMemoryMode.OFF) {
                                 latestOnSaveBrightnessPreference(
                                     latestCurrentVideo.uri.toString(),
@@ -2139,6 +2144,7 @@ fun VideoPlayerScreen(
                         }
                         if (gestureType == ActiveGestureType.VOLUME) {
                             leftEdgeVolumeVisible = false
+                            lastInteractionTick++
                         }
 
                         if (!movedSignificantly && !triggeredLongPress2x && !anyConsumedByChild) {
@@ -2625,15 +2631,27 @@ fun VideoPlayerScreen(
                         (1000f / currentVideo.frameRate.coerceAtLeast(1f)).toLong().coerceAtLeast(16L)
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    Box(
+                        contentAlignment = Alignment.CenterStart,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                            .testTag("player_quick_ribbon")
+                            .height(44.dp)
                     ) {
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = isControlsVisible && !leftEdgeVolumeVisible && !rightEdgeBrightnessVisible,
+                            enter = fadeIn(animationSpec = tween(durationMillis = 180)),
+                            exit = fadeOut(animationSpec = tween(durationMillis = 140)),
+                            label = "player_quick_ribbon_visibility"
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .testTag("player_quick_ribbon")
+                            ) {
                         // LEFT: Newly Revealed Tools (Night Mode, Shuffle, Loop, Mute, Sleep Timer, A-B Repeat, Frame Step)
                         AnimatedVisibility(
                             visible = isExtraRibbonExpanded,
@@ -2971,8 +2989,10 @@ fun VideoPlayerScreen(
                                 isExtraRibbonExpanded = !isExtraRibbonExpanded
                                 lastInteractionTick++
                             },
-                            modifier = Modifier.testTag("ribbon_expand_button")
-                        )
+                                modifier = Modifier.testTag("ribbon_expand_button")
+                            )
+                            }
+                        }
                     }
 
                     // Live Sleep Timer Countdown Badge inside HUD

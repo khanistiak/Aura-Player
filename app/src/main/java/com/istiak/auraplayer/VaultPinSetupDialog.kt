@@ -74,7 +74,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun VaultPinSetupDialog(
     title: String = "Set Vault PIN",
-    subtitle: String = "Create a 4-digit PIN to unlock your Private Folder",
+    subtitle: String = "Create a 4-digit PIN to unlock your Private Vault",
     confirmLabel: String = "Save PIN",
     onDismiss: () -> Unit,
     onConfirmPin: (String) -> Unit

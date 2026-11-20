@@ -117,13 +117,15 @@ object BiometricAuth {
         subtitle: String = "Use fingerprint, face unlock, or device credential to open your vault",
         onSuccess: () -> Unit,
         onFallbackPinRequired: () -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onPromptFinished: () -> Unit = {}
     ) {
         val authenticators = allowedAuthenticators()
         val biometricManager = BiometricManager.from(activity)
         val canAuth = biometricManager.canAuthenticate(authenticators)
 
         if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
+            onPromptFinished()
             onFallbackPinRequired()
             return
         }
@@ -133,27 +135,32 @@ object BiometricAuth {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 super.onAuthenticationSucceeded(result)
                 resetLockoutState(activity)
+                onPromptFinished()
                 onSuccess()
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                 super.onAuthenticationError(errorCode, errString)
+                onPromptFinished()
                 if (errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS ||
                     errorCode == BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL ||
                     errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT ||
                     errorCode == BiometricPrompt.ERROR_HW_UNAVAILABLE
                 ) {
                     onFallbackPinRequired()
-                } else if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
-                    errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON &&
-                    errorCode != BiometricPrompt.ERROR_CANCELED
+                } else if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                    errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                    errorCode == BiometricPrompt.ERROR_CANCELED
                 ) {
+                    onFallbackPinRequired()
+                } else {
                     onError(errString.toString())
                 }
             }
 
             override fun onAuthenticationFailed() {
                 super.onAuthenticationFailed()
+                onPromptFinished()
                 onError("Biometric not recognized. Try again or enter your Vault PIN.")
             }
         }
@@ -164,7 +171,12 @@ object BiometricAuth {
             .setAllowedAuthenticators(authenticators)
             .build()
 
-        BiometricPrompt(activity, executor, callback).authenticate(promptInfo)
+        runCatching {
+            BiometricPrompt(activity, executor, callback).authenticate(promptInfo)
+        }.onFailure {
+            onPromptFinished()
+            onFallbackPinRequired()
+        }
     }
 
     /**

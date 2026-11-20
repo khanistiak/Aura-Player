@@ -106,23 +106,27 @@ fun matchesQuickFilter(
     video: VideoItem,
     filter: LibraryQuickFilter,
     watchedVideoIds: Set<Long>,
-    seenBaselineEpochSec: Long,
+    seenBaselineEpochSec: Long = 0L,
     showNewLabel: Boolean = true,
-    newLabelDaysThreshold: Int = 7
+    newLabelDaysThreshold: Int = 7,
+    playbackProgress: PlaybackProgressSnapshot = PlaybackProgressSnapshot()
 ): Boolean = when (filter) {
     LibraryQuickFilter.ALL -> true
-    LibraryQuickFilter.UNWATCHED -> video.isConsideredNew(
-        watchedVideoIds = watchedVideoIds,
-        seenBaselineEpochSec = seenBaselineEpochSec,
-        showNewLabel = showNewLabel,
-        newLabelDaysThreshold = newLabelDaysThreshold
-    )
+    LibraryQuickFilter.UNWATCHED -> {
+        val isWatched = video.id in watchedVideoIds ||
+            playbackProgress.findProgress(video)?.isCompleted == true ||
+            playbackProgress.watchProgressFractionFor(video) >= 0.90f
+        !isWatched
+    }
     LibraryQuickFilter.HIGH_RES -> {
         val (w, h) = video.effectiveVisualDimensions()
-        maxOf(w, h) >= 1280 || minOf(w, h) >= 720 ||
+        h >= 720 || minOf(w, h) >= 720 || maxOf(w, h) >= 1280 ||
             video.resolutionTag in setOf("4K", "1440P", "1080P", "720P")
     }
-    LibraryQuickFilter.SUBTITLED -> video.hasSubtitles
+    LibraryQuickFilter.SUBTITLED -> {
+        video.hasSubtitles ||
+            (video.subtitleInfo.isNotBlank() && !video.subtitleInfo.equals("None", ignoreCase = true))
+    }
     LibraryQuickFilter.LARGE -> video.sizeBytes >= ONE_GIGABYTE_BYTES
 }
 

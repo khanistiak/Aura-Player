@@ -713,14 +713,15 @@ class ExampleRobolectricTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val manager = AppUpdateManager(context)
-        assertEquals("2.6.4", manager.getInstalledVersionName(context))
+        assertEquals("2.6.5", manager.getInstalledVersionName(context))
 
-        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.3"))
-        assertTrue(AppUpdateManager.isNewerVersion("v2.6.4", "2.6.3"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.3", "2.6.3"))
-        assertFalse(AppUpdateManager.isNewerVersion("v2.6.3-rc1", "2.6.3"))
+        assertTrue(AppUpdateManager.isNewerVersion("2.7.0", "2.6.5"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.10", "2.6.5"))
+        assertTrue(AppUpdateManager.isNewerVersion("v2.6.6", "2.6.5"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.5", "2.6.5"))
+        assertFalse(AppUpdateManager.isNewerVersion("v2.6.5-rc1", "2.6.5"))
         assertFalse(AppUpdateManager.isNewerVersion("v2.6", "2.6.0"))
-        assertFalse(AppUpdateManager.isNewerVersion("2.6.2", "2.6.3"))
+        assertFalse(AppUpdateManager.isNewerVersion("2.6.4", "2.6.5"))
 
         assertTrue(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.3", ""))
         assertFalse(AppUpdateManager.shouldPromptRelease("v2.7.0", "2.6.3", "v2.7.0"))

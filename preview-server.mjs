@@ -260,7 +260,7 @@ function renderHtml() {
         <img src="/logo.png" alt="Aura Player" />
         <div>
           <h1>Aura Player</h1>
-          <p>Native Android Kotlin &amp; Jetpack Compose Video Player &middot; v2.6.4</p>
+          <p>Native Android Kotlin &amp; Jetpack Compose Video Player &middot; v2.6.5</p>
         </div>
       </div>
       ${apk ? `<a class="btn" href="/download/app-debug.apk" download="AuraPlayer-debug.apk">Download Debug APK (${apkSizeLabel})</a>` : ''}
@@ -450,7 +450,7 @@ const server = http.createServer((req, res) => {
       JSON.stringify({
         name: 'Aura Player',
         applicationId: 'com.istiak.auraplayer',
-        versionName: '2.6.4',
+        versionName: '2.6.5',
         apkReady: Boolean(apk),
         apkSizeBytes: apk ? apk.sizeBytes : 0,
       })

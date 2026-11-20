@@ -165,7 +165,7 @@ fun SettingsScreen(
             add(
                 SettingsCategoryEntry(
                     key = "private_folder",
-                    title = "Private Folder",
+                    title = "Private Vault",
                     icon = Icons.Filled.Lock,
                     testTag = "settings_category_private_folder",
                     onClick = onOpenPrivateFolderSettings

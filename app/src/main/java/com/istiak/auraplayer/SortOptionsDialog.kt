@@ -46,6 +46,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -53,25 +54,31 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import com.istiak.auraplayer.ui.theme.MxBlueAccent
+import kotlinx.coroutines.delay
 
 /**
  * MX Player-Style Centered Sorting & View Options Dialog (`SortOptionsDialog.kt`):
@@ -115,7 +122,18 @@ fun SortOptionsDialog(
     var draftRecognizeNoMedia by remember(settings.recognizeNoMedia) { mutableStateOf(settings.recognizeNoMedia) }
 
     var fieldsExpanded by remember { mutableStateOf(true) }
-    var advancedExpanded by remember { mutableStateOf(true) }
+    var isAdvancedExpanded by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+
+    LaunchedEffect(isAdvancedExpanded) {
+        if (isAdvancedExpanded) {
+            withFrameNanos { }
+            scrollState.animateScrollTo(scrollState.maxValue)
+            delay(200L)
+            withFrameNanos { }
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -139,7 +157,7 @@ fun SortOptionsDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(scrollState)
                         .padding(horizontal = 18.dp, vertical = 18.dp)
                 ) {
                     // 1. TOP SPLIT ROW: View Mode (Left) | Layout (Right)
@@ -430,17 +448,17 @@ fun SortOptionsDialog(
                     // 4. COLLAPSIBLE ADVANCED SECTION (Toggle Switches)
                     CollapsibleSectionHeader(
                         title = "Advanced",
-                        expanded = advancedExpanded,
-                        onToggle = { advancedExpanded = !advancedExpanded },
+                        expanded = isAdvancedExpanded,
+                        onToggle = { isAdvancedExpanded = !isAdvancedExpanded },
                         modifier = Modifier.testTag("advanced_section_header")
                     )
 
-                    AnimatedVisibility(visible = advancedExpanded) {
+                    AnimatedVisibility(visible = isAdvancedExpanded) {
                         Column(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(bottom = 6.dp)
+                                .padding(bottom = 4.dp)
                         ) {
                             AdvancedDialogSwitchRow(
                                 label = "Display length over thumbnail",
@@ -648,26 +666,33 @@ private fun AdvancedDialogSwitchRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 38.dp, max = 42.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 4.dp)
+            .padding(vertical = 2.dp)
             .testTag(testTag)
     ) {
         Text(
             text = label,
-            fontSize = 12.5.sp,
+            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 14.sp,
             color = palette.primaryText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .weight(1f)
                 .padding(end = 8.dp)
         )
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = MxBlueAccent
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = MxBlueAccent
+                ),
+                modifier = Modifier.scale(0.82f)
             )
-        )
+        }
     }
 }

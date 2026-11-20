@@ -86,12 +86,12 @@ private val PfSlateHeaderLight = Color(0xFF434A6E)
 private val PfDividerLight = Color(0xFFE8ECF8)
 
 /**
- * Secure / Private Folder Settings Sub-Screen (`PrivateFolderSettingsScreen.kt`):
- * - Frozen `ScrollAwareFixedHeader`: `← Secure Folder Settings`
+ * Private Vault Settings Sub-Screen (`PrivateFolderSettingsScreen.kt`):
+ * - Frozen `ScrollAwareFixedHeader`: `← Private Vault`
  * - Section `| Security`: Enable Biometric Unlock, Reset PIN (4-box modal),
- *   Reset Security Question, Forgot PIN, and Hide Secure Folder Settings.
- * - Section `| Danger Zone`: Destroy Secure Folder with confirmation dialog.
- * - Section `| Help`: Secure Folder access tip.
+ *   Reset Security Question, Forgot PIN, and Hide Private Vault Settings.
+ * - Section `| Danger Zone`: Destroy Private Vault with confirmation dialog.
+ * - Section `| Help`: Private Vault access tip.
  */
 @Composable
 fun PrivateFolderSettingsScreen(
@@ -194,7 +194,7 @@ fun PrivateFolderSettingsScreen(
 
                     PfSwitchRow(
                         icon = Icons.Filled.VisibilityOff,
-                        title = "Hide Secure Folder Settings",
+                        title = "Hide Private Vault Settings",
                         subtitle = "Remove this entry from Settings",
                         checked = settings.hideSecureFolderSettings,
                         onCheckedChange = { hidden ->
@@ -239,7 +239,7 @@ fun PrivateFolderSettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Destroy Secure Folder",
+                                text = "Destroy Private Vault",
                                 color = PfDangerRed,
                                 fontSize = 14.5.sp,
                                 fontWeight = FontWeight.Bold
@@ -269,14 +269,14 @@ fun PrivateFolderSettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Secure Folder",
+                                text = "Private Vault",
                                 color = palette.primaryText,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Tap the discreet Vault icon in the top header or long-press the app title at the top of the Home screen to open the Secure Folder.",
+                                text = "Tap the discreet Vault icon in the top header or long-press the app title at the top of the Home screen to open the Private Vault.",
                                 color = palette.secondaryText,
                                 fontSize = 12.5.sp,
                                 lineHeight = 18.sp
@@ -311,7 +311,7 @@ fun PrivateFolderSettingsScreen(
                     )
                 }
                 Text(
-                    text = "Private Folder",
+                    text = "Private Vault",
                     style = MaterialTheme.typography.headlineMedium,
                     color = palette.brandTitleColor,
                     fontWeight = FontWeight.Bold,
@@ -325,7 +325,7 @@ fun PrivateFolderSettingsScreen(
     if (showPinSetupDialog) {
         VaultPinSetupDialog(
             title = "Set Vault PIN",
-            subtitle = "Create a 4-digit PIN to unlock your Private Folder",
+            subtitle = "Create a 4-digit PIN to unlock your Private Vault",
             onDismiss = { showPinSetupDialog = false },
             onConfirmPin = { newPin ->
                 val encryptedRecord = BiometricAuth.setCustomVaultPin(context, newPin)
@@ -403,7 +403,7 @@ private fun SecurityQuestionSetupDialog(
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Used to recover your Secure Folder if you forget your PIN.",
+            text = "Used to recover your Private Vault if you forget your PIN.",
             color = palette.secondaryText,
             fontSize = 13.sp
         )
@@ -580,7 +580,7 @@ private fun DestroySecureFolderConfirmDialog(
             }
             Spacer(modifier = Modifier.width(12.dp))
             Text(
-                text = "Destroy Secure Folder?",
+                text = "Destroy Private Vault?",
                 color = PfDangerRed,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold

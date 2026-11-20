@@ -74,14 +74,14 @@ sealed class UpdateCheckResult {
 
 /**
  * GitHub Releases Update Manager (`AppUpdateManager.kt`):
- * - Creates the high-importance `"auraplayer_updates"` (`"App Updates"`) notification channel.
+ * - Creates the high-importance `"app_updates"` (`"App Updates"`) notification channel.
  * - Queries [GITHUB_LATEST_RELEASE_API] (`https://api.github.com/repos/khanistiak/Aura-Player/releases/latest`)
- *   on [Dispatchers.IO] during app startup and when the user taps "Check for Updates Now" in `AboutScreen.kt`.
+ *   on [Dispatchers.IO] during app startup, background WorkManager runs, and manual "Check for Updates" taps.
  * - Parses `tag_name` (stripped leading `"v"`), `published_at` (`"MMMM yyyy"`), `body` (changelog lines),
  *   and the first `.apk` asset's `browser_download_url` and formatted `size` (e.g., `"18.4 MB"`).
  * - Posts a high-priority system notification when a newer release is discovered (and not yet notified
  *   for that `tag_name` in [SettingsDataStore]) whose `PendingIntent` opens `MainActivity` with
- *   `"show_update_sheet" = true`.
+ *   [EXTRA_SHOW_UPDATE_DIALOG] = true.
  */
 class AppUpdateManager(context: Context) {
 
@@ -92,7 +92,7 @@ class AppUpdateManager(context: Context) {
     }
 
     /**
-     * Creates the dedicated high-importance notification channel (`"auraplayer_updates"`, `"App Updates"`).
+     * Creates the dedicated high-importance notification channel (`"app_updates"`, `"App Updates"`).
      */
     fun ensureUpdateNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -281,7 +281,9 @@ class AppUpdateManager(context: Context) {
         }
 
         val tapIntent = Intent(appContext, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_SHOW_UPDATE_DIALOG, true)
             putExtra(EXTRA_SHOW_UPDATE_SHEET, true)
         }

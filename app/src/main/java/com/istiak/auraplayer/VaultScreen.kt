@@ -6,12 +6,16 @@ import android.content.ContextWrapper
 import android.net.Uri
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,7 +55,6 @@ import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Restore
@@ -81,7 +84,11 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -145,8 +152,10 @@ fun VaultScreen(
     onPlayVaultVideo: (VideoItem, List<VideoItem>) -> Unit,
     onRestoreToGallery: (VideoItem) -> Unit,
     onDeletePermanently: (VideoItem) -> Unit,
+    isBiometricPromptShowing: Boolean = false,
     isBiometricUnlockEnabled: Boolean = true,
     onVaultPinSavedRecord: (String) -> Unit = {},
+    onLeaveVault: () -> Unit = onLockVault,
     isSecureFolderSettingsHidden: Boolean = false,
     onOpenPrivateFolderSettings: () -> Unit = {},
     onUnhideSecureFolderSettings: () -> Unit = {},
@@ -155,17 +164,75 @@ fun VaultScreen(
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    BackHandler { onBack() }
-
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOnLockVault by rememberUpdatedState(onLockVault)
+    val currentOnLeaveVault by rememberUpdatedState(onLeaveVault)
     val palette = LocalExtendedPalette.current
     val isDark = palette.isDark
+    var isNavigatingAway by remember { mutableStateOf(false) }
+    var isNavigatingToSettings by remember { mutableStateOf(false) }
+    var wasUnlockedBeforeNavigatingAway by remember { mutableStateOf(isUnlocked) }
+    if (!isNavigatingAway) {
+        wasUnlockedBeforeNavigatingAway = isUnlocked
+    }
+    val showUnlockedVaultContent = isUnlocked || (isNavigatingAway && wasUnlockedBeforeNavigatingAway)
+
+    val handleExitVault = {
+        if (!isNavigatingAway) {
+            isNavigatingAway = true
+            isNavigatingToSettings = false
+            onBack()
+        }
+    }
+    val handleOpenSettings = {
+        if (!isNavigatingAway) {
+            isNavigatingAway = true
+            isNavigatingToSettings = true
+            onOpenSettings()
+        }
+    }
+    val handleOpenPrivateFolderSettings = {
+        if (!isNavigatingAway) {
+            isNavigatingAway = true
+            isNavigatingToSettings = true
+            onOpenPrivateFolderSettings()
+        }
+    }
+    BackHandler { handleExitVault() }
+
     var showVaultOverflowMenu by remember { mutableStateOf(false) }
     var showImportPickerSheet by remember { mutableStateOf(false) }
     var pendingUnhideVideo by remember { mutableStateOf<VideoItem?>(null) }
     var pendingDeleteVideo by remember { mutableStateOf<VideoItem?>(null) }
     val imageLoader = rememberVideoImageLoader()
     val vaultManager = remember(context) { PrivateVaultManager(context.applicationContext) }
+
+    // Reset navigation guard on resume, lock on Activity background (ON_STOP),
+    // and lock on dispose only when truly leaving the Vault (not navigating into Settings).
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isNavigatingAway = false
+                    isNavigatingToSettings = false
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    if (!isNavigatingToSettings) {
+                        currentOnLockVault()
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (!isNavigatingToSettings) {
+                currentOnLeaveVault()
+            }
+        }
+    }
 
     // Enforce FLAG_SECURE while inside the Private Vault so screenshots & recent-apps snapshots
     // cannot capture PIN entry or private media.
@@ -243,19 +310,36 @@ fun VaultScreen(
             .testTag("vault_screen")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (!isUnlocked) {
-                VaultPinLockScreen(
-                    authErrorMessage = authErrorMessage,
-                    canUseBiometric = canUseBiometric,
-                    topClearanceDp = scrollLayout.measuredHeaderHeightDp + 8.dp,
-                    bottomClearanceDp = navBottomDp + 20.dp,
-                    onRequestBiometricUnlock = onRequestBiometricUnlock,
-                    onPinAuthenticated = onFallbackPinAuthenticated,
-                    onPinCreatedAndSaved = { encryptedRecord ->
-                        onVaultPinSavedRecord(encryptedRecord)
-                        onFallbackPinAuthenticated()
+            if (!showUnlockedVaultContent) {
+                if (!isNavigatingAway) {
+                    AnimatedContent(
+                        targetState = isBiometricPromptShowing,
+                        transitionSpec = {
+                            fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(160))
+                        },
+                        label = "vault_biometric_vs_pin_content"
+                    ) { biometricActive ->
+                        if (biometricActive) {
+                            VaultBiometricVerificationBackdrop(
+                                topClearanceDp = scrollLayout.measuredHeaderHeightDp + 8.dp,
+                                bottomClearanceDp = navBottomDp + 20.dp
+                            )
+                        } else if (!isUnlocked && !isBiometricPromptShowing && !isNavigatingAway) {
+                            VaultPinLockScreen(
+                                authErrorMessage = authErrorMessage,
+                                canUseBiometric = canUseBiometric,
+                                topClearanceDp = scrollLayout.measuredHeaderHeightDp + 8.dp,
+                                bottomClearanceDp = navBottomDp + 20.dp,
+                                onRequestBiometricUnlock = onRequestBiometricUnlock,
+                                onPinAuthenticated = onFallbackPinAuthenticated,
+                                onPinCreatedAndSaved = { encryptedRecord ->
+                                    onVaultPinSavedRecord(encryptedRecord)
+                                    onFallbackPinAuthenticated()
+                                }
+                            )
+                        }
                     }
-                )
+                }
             } else if (resolvedVaultVideos.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -370,16 +454,16 @@ fun VaultScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 6.dp, end = 8.dp, top = 8.dp, bottom = 10.dp)
+                        .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 10.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
                         IconButton(
-                            onClick = onBack,
+                            onClick = handleExitVault,
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(40.dp)
                                 .testTag("vault_back_button")
                         ) {
                             Icon(
@@ -388,6 +472,7 @@ fun VaultScreen(
                                 tint = palette.brandTitleColor
                             )
                         }
+                        Spacer(modifier = Modifier.width(6.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "Private Vault",
@@ -402,7 +487,7 @@ fun VaultScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                if (isUnlocked) {
+                                if (showUnlockedVaultContent) {
                                     val countLabel = when (resolvedVaultVideos.size) {
                                         0 -> "0 items"
                                         1 -> "1 item"
@@ -413,6 +498,8 @@ fun VaultScreen(
                                         color = palette.secondaryText,
                                         fontSize = 11.5.sp,
                                         fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         modifier = Modifier.testTag("vault_header_item_count")
                                     )
                                     Text(
@@ -435,72 +522,45 @@ fun VaultScreen(
                                             else Color(0xFF2563EB).copy(alpha = 0.22f),
                                             shape = CircleShape
                                         )
-                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
                                         .testTag("vault_keystore_badge")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.VerifiedUser,
                                         contentDescription = null,
                                         tint = if (isDark) Color(0xFF93C5FD) else Color(0xFF2563EB),
-                                        modifier = Modifier.size(11.dp)
+                                        modifier = Modifier.size(12.dp)
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
                                     Text(
                                         text = "Protected with Keystore",
                                         color = if (isDark) Color(0xFFDBEAFE) else Color(0xFF1D4ED8),
                                         fontSize = 10.sp,
+                                        lineHeight = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        softWrap = false
                                     )
                                 }
                             }
                         }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (isUnlocked) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(palette.periwinkleBadgeBg)
-                                    .border(
-                                        width = 0.8.dp,
-                                        color = palette.periwinkleBadgeText.copy(alpha = 0.24f),
-                                        shape = CircleShape
-                                    )
-                                    .clickable { onLockVault() }
-                                    .padding(horizontal = 11.dp, vertical = 7.dp)
-                                    .testTag("lock_vault_button")
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Lock,
-                                        contentDescription = "Lock Vault",
-                                        tint = palette.periwinkleBadgeText,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text(
-                                        text = "Lock",
-                                        color = palette.periwinkleBadgeText,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(2.dp))
-                        }
+                    Spacer(modifier = Modifier.width(4.dp))
 
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
                         IconButton(
-                            onClick = onOpenSettings,
+                            onClick = handleOpenPrivateFolderSettings,
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(40.dp)
                                 .testTag("vault_settings_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Settings,
-                                contentDescription = "Settings",
+                                contentDescription = "Private Vault Settings",
                                 tint = palette.brandTitleColor
                             )
                         }
@@ -509,7 +569,7 @@ fun VaultScreen(
                             IconButton(
                                 onClick = { showVaultOverflowMenu = true },
                                 modifier = Modifier
-                                    .size(48.dp)
+                                    .size(40.dp)
                                     .testTag("vault_more_menu_button")
                             ) {
                                 Icon(
@@ -526,7 +586,7 @@ fun VaultScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = "Private Folder Settings",
+                                            text = "Private Vault Settings",
                                             color = palette.primaryText,
                                             fontWeight = FontWeight.Medium
                                         )
@@ -540,7 +600,7 @@ fun VaultScreen(
                                     },
                                     onClick = {
                                         showVaultOverflowMenu = false
-                                        onOpenPrivateFolderSettings()
+                                        handleOpenPrivateFolderSettings()
                                     },
                                     modifier = Modifier.testTag("vault_menu_private_folder_settings")
                                 )
@@ -548,7 +608,7 @@ fun VaultScreen(
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = "Unhide Secure Folder Settings",
+                                                text = "Unhide Private Vault Settings",
                                                 color = palette.primaryText,
                                                 fontWeight = FontWeight.Medium
                                             )
@@ -584,7 +644,7 @@ fun VaultScreen(
                                     },
                                     onClick = {
                                         showVaultOverflowMenu = false
-                                        onOpenSettings()
+                                        handleOpenSettings()
                                     }
                                 )
                             }
@@ -593,7 +653,7 @@ fun VaultScreen(
                 }
             }
 
-            if (isUnlocked) {
+            if (showUnlockedVaultContent) {
                 val fabInteractionSource = remember { MutableInteractionSource() }
                 val isPressed by fabInteractionSource.collectIsPressedAsState()
                 val pressScale by animateFloatAsState(
@@ -720,6 +780,104 @@ fun VaultScreen(
                     pendingDeleteVideo = null
                     onDeletePermanently(targetVideo)
                 }
+            )
+        }
+    }
+}
+
+/**
+ * Clean, uncluttered Liquid Glass backdrop shown while Android's system BiometricPrompt sheet
+ * is active (`isBiometricPromptShowing == true`), keeping the PIN keypad hidden until needed.
+ */
+@Composable
+private fun VaultBiometricVerificationBackdrop(
+    topClearanceDp: androidx.compose.ui.unit.Dp,
+    bottomClearanceDp: androidx.compose.ui.unit.Dp
+) {
+    val palette = LocalExtendedPalette.current
+    val isDark = palette.isDark
+    val auraBlue = if (isDark) Color(0xFF60A5FA) else Color(0xFF2563EB)
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(
+                start = 24.dp,
+                end = 24.dp,
+                top = topClearanceDp,
+                bottom = bottomClearanceDp + 72.dp
+            )
+            .testTag("vault_biometric_backdrop")
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(116.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(116.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    auraBlue.copy(alpha = if (isDark) 0.34f else 0.24f),
+                                    auraBlue.copy(alpha = 0.08f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(80.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isDark) Color(0xFF141824).copy(alpha = 0.78f)
+                            else Color.White.copy(alpha = 0.80f)
+                        )
+                        .border(
+                            width = 1.2.dp,
+                            brush = Brush.verticalGradient(
+                                listOf(
+                                    Color.White.copy(alpha = if (isDark) 0.32f else 0.94f),
+                                    auraBlue.copy(alpha = 0.42f)
+                                )
+                            ),
+                            shape = CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Fingerprint,
+                        contentDescription = "Verify your identity",
+                        tint = auraBlue,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Verify your identity",
+                color = palette.primaryText,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Private Vault is protected with Android Keystore",
+                color = palette.secondaryText,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -916,7 +1074,7 @@ private fun VaultPinLockScreen(
     }
     val subtitle = when {
         lockoutState.isLockedOut -> "Too many failed PIN attempts"
-        !hasExistingPin && firstSetupPin == null -> "Choose a 4-digit PIN hashed with PBKDF2 & Keystore"
+        !hasExistingPin && firstSetupPin == null -> "Choose a 4-digit PIN"
         !hasExistingPin -> "Re-enter your 4-digit PIN to confirm"
         canUseBiometric -> "Use your 4-digit PIN or tap fingerprint to unlock"
         else -> "Enter your 4-digit PIN to access private videos"

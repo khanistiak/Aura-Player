@@ -113,7 +113,9 @@ fun HomeScreen(
 ) {
     val palette = LocalExtendedPalette.current
     val imageLoader = rememberVideoImageLoader()
-    var showSearchBar by remember { mutableStateOf(searchQuery.isNotEmpty()) }
+    var showSearchBar by remember {
+        mutableStateOf(searchQuery.isNotEmpty() || selectedQuickFilter != LibraryQuickFilter.ALL)
+    }
     var actionSheetVideo by remember { mutableStateOf<VideoItem?>(null) }
     var renameTargetVideo by remember { mutableStateOf<VideoItem?>(null) }
 

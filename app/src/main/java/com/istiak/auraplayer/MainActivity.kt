@@ -11,7 +11,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.provider.Settings
+import android.util.Patterns
 import android.util.Rational
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -78,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -116,6 +119,75 @@ enum class FolderPickerMode {
     COPY
 }
 
+data class IncomingVideoRequest(
+    val uris: List<Uri>,
+    val requestId: Long = System.nanoTime()
+)
+
+private val HTTP_VIDEO_URL_REGEX = Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE)
+
+internal fun extractSharedHttpVideoUri(rawText: String?): Uri? {
+    val trimmed = rawText?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val candidate = HTTP_VIDEO_URL_REGEX.find(trimmed)?.value?.trimEnd('.', ',', ';', ')', ']')
+        ?: trimmed.takeIf {
+            (it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)) &&
+                Patterns.WEB_URL.matcher(it).matches()
+        }
+        ?: return null
+    return runCatching {
+        val parsed = Uri.parse(candidate)
+        val scheme = parsed.scheme?.lowercase()
+        if (scheme == "http" || scheme == "https") parsed else null
+    }.getOrNull()
+}
+
+internal fun extractIncomingVideoUris(intent: Intent?): List<Uri> {
+    if (intent == null) return emptyList()
+    val collected = LinkedHashSet<Uri>()
+
+    fun collectClipDataUris() {
+        val clip = intent.clipData ?: return
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i) ?: continue
+            item.uri?.let { collected.add(it) }
+                ?: extractSharedHttpVideoUri(item.text?.toString())?.let { collected.add(it) }
+        }
+    }
+
+    when (intent.action) {
+        Intent.ACTION_VIEW -> {
+            intent.data?.let { collected.add(it) }
+            if (collected.isEmpty()) {
+                collectClipDataUris()
+            }
+        }
+        Intent.ACTION_SEND -> {
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?.let { collected.add(it) }
+            if (collected.isEmpty()) {
+                intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+                    ?.let { collected.add(it) }
+            }
+            if (collected.isEmpty()) {
+                extractSharedHttpVideoUri(intent.getStringExtra(Intent.EXTRA_TEXT))
+                    ?.let { collected.add(it) }
+            }
+            if (collected.isEmpty()) {
+                collectClipDataUris()
+            }
+        }
+        Intent.ACTION_SEND_MULTIPLE -> {
+            IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?.filterNotNull()
+                ?.forEach { collected.add(it) }
+            if (collected.isEmpty()) {
+                collectClipDataUris()
+            }
+        }
+    }
+    return collected.toList()
+}
+
 /**
  * MainActivity extends FragmentActivity to support androidx.biometric.BiometricPrompt
  * alongside Jetpack Compose, DataStore Settings, hierarchical MediaStore Tree View, and Media3 ExoPlayer.
@@ -125,6 +197,35 @@ class MainActivity : FragmentActivity() {
     private var isActivelyPlayingVideo: Boolean = false
     private var pipAspectRatio: Rational = Rational(16, 9)
     private val showUpdateSheetRequestState = mutableStateOf(false)
+    private val incomingVideoRequestState = mutableStateOf<IncomingVideoRequest?>(null)
+
+    private fun processIncomingIntent(incomingIntent: Intent?) {
+        if (incomingIntent == null) return
+
+        val openUpdate = incomingIntent.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) ||
+            incomingIntent.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false)
+        if (openUpdate) {
+            showUpdateSheetRequestState.value = true
+            incomingIntent.removeExtra(EXTRA_SHOW_UPDATE_DIALOG)
+            incomingIntent.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
+        }
+
+        val sharedUris = extractIncomingVideoUris(incomingIntent)
+        if (sharedUris.isNotEmpty()) {
+            val hasReadGrant = (incomingIntent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
+            sharedUris.forEach { uri ->
+                if (uri.scheme.equals("content", ignoreCase = true) && hasReadGrant) {
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                    }
+                }
+            }
+            incomingVideoRequestState.value = IncomingVideoRequest(uris = sharedUris)
+        }
+    }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
@@ -141,13 +242,7 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val openUpdate = intent.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) ||
-            intent.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false)
-        if (openUpdate) {
-            showUpdateSheetRequestState.value = true
-            intent.removeExtra(EXTRA_SHOW_UPDATE_DIALOG)
-            intent.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
-        }
+        processIncomingIntent(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -155,20 +250,7 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         UpdateCheckWorker.schedulePeriodicCheck(applicationContext)
-
-        val openUpdateFromLaunch = intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) == true ||
-            intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_SHEET, false) == true
-        if (openUpdateFromLaunch) {
-            showUpdateSheetRequestState.value = true
-            intent?.removeExtra(EXTRA_SHOW_UPDATE_DIALOG)
-            intent?.removeExtra(EXTRA_SHOW_UPDATE_SHEET)
-        }
-
-        val externalVideoUri: Uri? = if (intent?.action == Intent.ACTION_VIEW) {
-            intent.data
-        } else {
-            null
-        }
+        processIncomingIntent(intent)
 
         setContent {
             val settingsStore = remember { SettingsDataStore(applicationContext) }
@@ -181,6 +263,7 @@ class MainActivity : FragmentActivity() {
             }
             val liveGlassConfig = optimisticGlassConfig ?: persistedGlassConfig
             val openUpdateSheetFromNotification by showUpdateSheetRequestState
+            val incomingVideoRequest by incomingVideoRequestState
 
             val useDarkTheme = when (settings.themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -212,7 +295,10 @@ class MainActivity : FragmentActivity() {
                         liquidGlassPrefs = liquidGlassPrefs,
                         liquidGlassConfig = liveGlassConfig,
                         onOptimisticGlassConfig = { optimisticGlassConfig = it },
-                        initialExternalVideoUri = externalVideoUri,
+                        incomingVideoRequest = incomingVideoRequest,
+                        onConsumeIncomingVideoRequest = {
+                            incomingVideoRequestState.value = null
+                        },
                         openUpdateSheetFromNotification = openUpdateSheetFromNotification,
                         onConsumeUpdateSheetNotificationIntent = {
                             showUpdateSheetRequestState.value = false
@@ -237,6 +323,8 @@ fun AuraPlayerApp(
     liquidGlassConfig: LiquidGlassConfig = LocalLiquidGlassConfig.current,
     onOptimisticGlassConfig: (LiquidGlassConfig) -> Unit = {},
     initialExternalVideoUri: Uri? = null,
+    incomingVideoRequest: IncomingVideoRequest? = null,
+    onConsumeIncomingVideoRequest: () -> Unit = {},
     openUpdateSheetFromNotification: Boolean = false,
     onConsumeUpdateSheetNotificationIntent: () -> Unit = {},
     onUpdatePipState: (Boolean, Rational) -> Unit = { _, _ -> }
@@ -296,13 +384,17 @@ fun AuraPlayerApp(
     var hasPromptedAllFilesOnce by rememberSaveable { mutableStateOf(false) }
     var pendingStartupAllFilesReturn by rememberSaveable { mutableStateOf(false) }
 
-    var showSplash by rememberSaveable { mutableStateOf(initialExternalVideoUri == null) }
+    var showSplash by rememberSaveable {
+        mutableStateOf(initialExternalVideoUri == null && incomingVideoRequest == null)
+    }
     var selectedTab by rememberSaveable { mutableStateOf(MainNavTab.HOME) }
     var currentTreePath by rememberSaveable { mutableStateOf("") }
     var selectedFlatFolderPath by rememberSaveable { mutableStateOf<String?>(null) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedQuickFilter by rememberSaveable { mutableStateOf(LibraryQuickFilter.ALL) }
     var showSortOptionsSheet by rememberSaveable { mutableStateOf(false) }
     var overlayScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.NONE) }
+    var settingsReturnScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.NONE) }
     var privateFolderReturnScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.SETTINGS) }
     var liquidGlassReturnScreen by rememberSaveable { mutableStateOf(ActiveOverlayScreen.SETTINGS) }
     var mediaInfoTargetVideo by remember { mutableStateOf<VideoItem?>(null) }
@@ -329,15 +421,31 @@ fun AuraPlayerApp(
     // Vault security state
     var isVaultUnlocked by rememberSaveable { mutableStateOf(false) }
     var showFallbackPinSheet by rememberSaveable { mutableStateOf(false) }
+    var isBiometricPromptShowing by remember { mutableStateOf(false) }
     var vaultAuthError by remember { mutableStateOf<String?>(null) }
 
     val currentSettings by rememberUpdatedState(settings)
 
     // Currently playing video & playlist
-    var pendingExternalVideoUri by remember { mutableStateOf(initialExternalVideoUri) }
+    var pendingExternalVideoRequest by remember {
+        mutableStateOf(
+            incomingVideoRequest ?: initialExternalVideoUri?.let { IncomingVideoRequest(listOf(it)) }
+        )
+    }
     var activePlayingVideo by remember { mutableStateOf<VideoItem?>(null) }
     var activePlaylist by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var forceResumeOnPlayerStart by remember { mutableStateOf(false) }
+
+    // Capture incoming Share / View intents delivered both on cold launch and via onNewIntent
+    LaunchedEffect(incomingVideoRequest) {
+        val request = incomingVideoRequest ?: return@LaunchedEffect
+        if (request.uris.isNotEmpty()) {
+            showSplash = false
+            overlayScreen = ActiveOverlayScreen.NONE
+            pendingExternalVideoRequest = request
+        }
+        onConsumeIncomingVideoRequest()
+    }
 
     // Enforce FLAG_SECURE while viewing the Private Vault, Private Folder Settings, or playing a vault video
     val isPrivateVaultSurfaceActive = overlayScreen == ActiveOverlayScreen.VAULT ||
@@ -354,6 +462,18 @@ fun AuraPlayerApp(
         }
     }
 
+    fun isSettingsOverlay(screen: ActiveOverlayScreen): Boolean {
+        return screen == ActiveOverlayScreen.SETTINGS ||
+            screen == ActiveOverlayScreen.PRIVATE_FOLDER_SETTINGS ||
+            screen == ActiveOverlayScreen.APPEARANCE_SETTINGS ||
+            screen == ActiveOverlayScreen.LIQUID_GLASS_SETTINGS ||
+            screen == ActiveOverlayScreen.FOLDER_SETTINGS ||
+            screen == ActiveOverlayScreen.PLAYER_SETTINGS ||
+            screen == ActiveOverlayScreen.GESTURE_SETTINGS ||
+            screen == ActiveOverlayScreen.CODEC_DIAGNOSTICS ||
+            screen == ActiveOverlayScreen.ABOUT
+    }
+
     // Automatically migrate any legacy plaintext Vault PIN and sync encrypted PBKDF2 record with DataStore
     LaunchedEffect(settings.encryptedVaultPinRecord) {
         withContext(Dispatchers.IO) {
@@ -368,31 +488,89 @@ fun AuraPlayerApp(
         }
     }
 
-    LaunchedEffect(pendingExternalVideoUri) {
-        val extUri = pendingExternalVideoUri ?: return@LaunchedEffect
-        val stub = VideoItem(
-            id = -1L,
-            uri = extUri,
-            title = extUri.lastPathSegment ?: "External Video",
-            displayName = extUri.lastPathSegment ?: "video.mp4",
-            durationMs = 0L,
-            sizeBytes = 0L,
-            width = 0,
-            height = 0,
-            folderName = "External",
-            dateAddedSec = System.currentTimeMillis() / 1000L
-        )
-        val resolved = videoRepository.resolveDimensionsBeforePlayback(stub)
+    LaunchedEffect(pendingExternalVideoRequest) {
+        val request = pendingExternalVideoRequest ?: return@LaunchedEffect
+        val uris = request.uris
+        if (uris.isEmpty()) {
+            pendingExternalVideoRequest = null
+            return@LaunchedEffect
+        }
+
+        val nowSec = System.currentTimeMillis() / 1000L
+        val stubs = withContext(Dispatchers.IO) {
+            uris.mapIndexed { index, extUri ->
+                var displayName = extUri.lastPathSegment
+                    ?.substringAfterLast('/')
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Shared Video ${index + 1}.mp4"
+                var fileSize = 0L
+
+                if (extUri.scheme.equals("content", ignoreCase = true)) {
+                    runCatching {
+                        activity.contentResolver.query(
+                            extUri,
+                            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                            null,
+                            null,
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                if (nameIdx >= 0) {
+                                    cursor.getString(nameIdx)?.takeIf { it.isNotBlank() }?.let {
+                                        displayName = it
+                                    }
+                                }
+                                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                                    fileSize = cursor.getLong(sizeIdx).coerceAtLeast(0L)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val mimeType = runCatching {
+                    activity.contentResolver.getType(extUri)
+                }.getOrNull()?.takeIf { it.isNotBlank() } ?: "video/*"
+                val cleanTitle = displayName.substringBeforeLast('.').ifBlank { displayName }
+
+                VideoItem(
+                    id = -1L - index.toLong(),
+                    uri = extUri,
+                    title = cleanTitle,
+                    displayName = displayName,
+                    durationMs = 0L,
+                    sizeBytes = fileSize,
+                    width = 0,
+                    height = 0,
+                    folderName = "Shared",
+                    dateAddedSec = nowSec,
+                    mimeType = mimeType
+                )
+            }
+        }
+
+        val firstStub = stubs.first()
+        val isHttpStream = firstStub.uri.scheme.equals("http", ignoreCase = true) ||
+            firstStub.uri.scheme.equals("https", ignoreCase = true)
+        val resolvedFirst = if (isHttpStream) {
+            firstStub
+        } else {
+            videoRepository.resolveDimensionsBeforePlayback(firstStub)
+        }
+        val playlist = listOf(resolvedFirst) + stubs.drop(1)
+
         activity.requestedOrientation = resolveTargetActivityOrientation(
             mode = currentSettings.videoOrientationMode,
-            width = resolved.width,
-            height = resolved.height,
-            rotationDegrees = resolved.rotationDegrees
+            width = resolvedFirst.width,
+            height = resolvedFirst.height,
+            rotationDegrees = resolvedFirst.rotationDegrees
         )
         forceResumeOnPlayerStart = false
-        activePlaylist = listOf(resolved)
-        activePlayingVideo = resolved
-        pendingExternalVideoUri = null
+        activePlaylist = playlist
+        activePlayingVideo = resolvedFirst
+        pendingExternalVideoRequest = null
     }
 
     fun launchPlayer(
@@ -536,7 +714,7 @@ fun AuraPlayerApp(
             isVaultUnlocked = false
             showFallbackPinSheet = false
             vaultToastEvent = VaultToastEvent(
-                message = "Secure Folder destroyed",
+                message = "Private Vault destroyed",
                 type = VaultToastType.INFO
             )
         }
@@ -573,11 +751,12 @@ fun AuraPlayerApp(
     }
 
     // Auto-lock Vault when app is minimized and sync storage permissions on resume
-    DisposableEffect(lifecycleOwner, settings.autoLockVaultOnMinimize) {
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP && settings.autoLockVaultOnMinimize) {
+            if (event == Lifecycle.Event.ON_STOP) {
                 isVaultUnlocked = false
                 showFallbackPinSheet = false
+                isBiometricPromptShowing = false
             } else if (event == Lifecycle.Event.ON_RESUME) {
                 val wasAllFilesGranted = hasAllFilesAccess
                 val nowAllFilesGranted = isAllFilesAccessGranted()
@@ -741,26 +920,7 @@ fun AuraPlayerApp(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            val release = startupUpdateRelease
-            val installedVersion = appUpdateManager.getInstalledVersionName()
-            if (release != null &&
-                AppUpdateManager.shouldPromptRelease(
-                    release.tagName,
-                    installedVersion,
-                    settings.lastDismissedOrInstalledTag
-                )
-            ) {
-                coroutineScope.launch {
-                    val lastNotified = settings.lastNotifiedUpdateTag
-                    val alreadyNotified = lastNotified.isNotBlank() &&
-                        !AppUpdateManager.isNewerVersion(release.tagName, lastNotified)
-                    if (!alreadyNotified) {
-                        if (appUpdateManager.postSystemUpdateNotification(release)) {
-                            settingsStore.setLastNotifiedUpdateTag(release.tagName)
-                        }
-                    }
-                }
-            }
+            appUpdateManager.ensureUpdateNotificationChannel()
         }
     }
 
@@ -785,9 +945,9 @@ fun AuraPlayerApp(
         }
     }
 
-    // Automatic startup check on Dispatchers.IO after storage permissions settle
+    // Automatic silent startup update check on Dispatchers.IO after splash settles
     LaunchedEffect(Unit) {
-        snapshotFlow { !showSplash && !showAllFilesAccessDialog && hasMediaPermission }
+        snapshotFlow { !showSplash && !showAllFilesAccessDialog }
             .first { it }
         if (!hasCompletedStartupUpdateCheck) {
             hasCompletedStartupUpdateCheck = true
@@ -841,21 +1001,34 @@ fun AuraPlayerApp(
 
     fun triggerVaultAuthentication() {
         if (!settings.biometricVaultLockEnabled) {
+            isBiometricPromptShowing = false
             return
         }
         vaultAuthError = null
+        if (!BiometricAuth.canUseSystemBiometricOrCredential(activity)) {
+            isBiometricPromptShowing = false
+            showFallbackPinSheet = true
+            return
+        }
+        isBiometricPromptShowing = true
         BiometricAuth.authenticate(
             activity = activity,
             onSuccess = {
+                isBiometricPromptShowing = false
                 isVaultUnlocked = true
                 showFallbackPinSheet = false
                 vaultAuthError = null
             },
             onFallbackPinRequired = {
+                isBiometricPromptShowing = false
                 showFallbackPinSheet = true
             },
             onError = { errMsg ->
+                isBiometricPromptShowing = false
                 vaultAuthError = errMsg
+            },
+            onPromptFinished = {
+                isBiometricPromptShowing = false
             }
         )
     }
@@ -935,7 +1108,7 @@ fun AuraPlayerApp(
                                 vaultVideos = vaultManager.getVaultVideos()
                                 refreshAllVideos(autoSeedIfEmpty = false)
                                 vaultToastEvent = VaultToastEvent(
-                                    message = "Locked in Private Folder",
+                                    message = "Locked in Private Vault",
                                     type = VaultToastType.LOCK
                                 )
                             }
@@ -953,9 +1126,9 @@ fun AuraPlayerApp(
                                 vaultVideos = vaultManager.getVaultVideos()
                                 refreshAllVideos(autoSeedIfEmpty = false)
                                 val msg = if (res.movedCount <= 1) {
-                                    "Locked in Private Folder"
+                                    "Locked in Private Vault"
                                 } else {
-                                    "Locked ${res.movedCount} videos in Private Folder"
+                                    "Locked ${res.movedCount} videos in Private Vault"
                                 }
                                 vaultToastEvent = VaultToastEvent(
                                     message = msg,
@@ -987,7 +1160,7 @@ fun AuraPlayerApp(
                     vaultVideos = vaultManager.getVaultVideos()
                     refreshAllVideos(autoSeedIfEmpty = false)
                     vaultToastEvent = VaultToastEvent(
-                        message = "Locked in Private Folder",
+                        message = "Locked in Private Vault",
                         type = VaultToastType.LOCK
                     )
                 }
@@ -1011,9 +1184,9 @@ fun AuraPlayerApp(
                     vaultVideos = vaultManager.getVaultVideos()
                     refreshAllVideos(autoSeedIfEmpty = false)
                     val msg = if (res.movedCount <= 1) {
-                        "Locked in Private Folder"
+                        "Locked in Private Vault"
                     } else {
-                        "Locked ${res.movedCount} videos in Private Folder"
+                        "Locked ${res.movedCount} videos in Private Vault"
                     }
                     vaultToastEvent = VaultToastEvent(
                         message = msg,
@@ -1083,7 +1256,7 @@ fun AuraPlayerApp(
     Box(modifier = Modifier.fillMaxSize()) {
         Crossfade(
             targetState = when {
-                pendingExternalVideoUri != null -> "PREPARING_EXTERNAL"
+                pendingExternalVideoRequest != null -> "PREPARING_EXTERNAL"
                 activePlayingVideo != null -> "PLAYER"
                 overlayScreen == ActiveOverlayScreen.MEDIA_INFO && mediaInfoTargetVideo != null -> "MEDIA_INFO"
                 overlayScreen == ActiveOverlayScreen.CODEC_DIAGNOSTICS -> "CODECS"
@@ -1127,6 +1300,11 @@ fun AuraPlayerApp(
                             }
                         },
                         onOpenSettingsFromPlayer = {
+                            settingsReturnScreen = if (playing.isVaultItem) {
+                                ActiveOverlayScreen.VAULT
+                            } else {
+                                ActiveOverlayScreen.NONE
+                            }
                             overlayScreen = ActiveOverlayScreen.SETTINGS
                         },
                         onShareVideo = { vid ->
@@ -1588,7 +1766,7 @@ fun AuraPlayerApp(
                                 },
                                 onOpenCodecDiagnostics = { overlayScreen = ActiveOverlayScreen.CODEC_DIAGNOSTICS },
                                 onOpenAbout = { overlayScreen = ActiveOverlayScreen.ABOUT },
-                                onBack = { overlayScreen = ActiveOverlayScreen.NONE }
+                                onBack = { overlayScreen = settingsReturnScreen }
                             )
                         }
                     }
@@ -1620,8 +1798,12 @@ fun AuraPlayerApp(
                             onLockVault = {
                                 isVaultUnlocked = false
                                 showFallbackPinSheet = false
+                                isBiometricPromptShowing = false
                             },
-                            onOpenSettings = { overlayScreen = ActiveOverlayScreen.SETTINGS },
+                            onOpenSettings = {
+                                settingsReturnScreen = ActiveOverlayScreen.VAULT
+                                overlayScreen = ActiveOverlayScreen.SETTINGS
+                            },
                             onPlayVaultVideo = { vid, list ->
                                 launchPlayer(vid, list)
                             },
@@ -1648,10 +1830,20 @@ fun AuraPlayerApp(
                                     }
                                 }
                             },
+                            isBiometricPromptShowing = isBiometricPromptShowing,
                             isBiometricUnlockEnabled = settings.biometricVaultLockEnabled,
                             onVaultPinSavedRecord = { encryptedRecord ->
                                 coroutineScope.launch {
                                     settingsStore.saveEncryptedVaultPinRecord(encryptedRecord)
+                                }
+                            },
+                            onLeaveVault = {
+                                val stayingInVaultSession = activePlayingVideo?.isVaultItem == true ||
+                                    isSettingsOverlay(overlayScreen)
+                                if (!stayingInVaultSession) {
+                                    isVaultUnlocked = false
+                                    showFallbackPinSheet = false
+                                    isBiometricPromptShowing = false
                                 }
                             },
                             isSecureFolderSettingsHidden = settings.hideSecureFolderSettings,
@@ -1663,7 +1855,7 @@ fun AuraPlayerApp(
                                 coroutineScope.launch {
                                     settingsStore.setHideSecureFolderSettings(false)
                                     vaultToastEvent = VaultToastEvent(
-                                        message = "Secure Folder Settings restored",
+                                        message = "Private Vault Settings restored",
                                         type = VaultToastType.INFO
                                     )
                                 }
@@ -1777,7 +1969,10 @@ fun AuraPlayerApp(
                                         triggerVaultAuthentication()
                                     }
                                 },
-                                onOpenSettings = { overlayScreen = ActiveOverlayScreen.SETTINGS },
+                                onOpenSettings = {
+                                    settingsReturnScreen = ActiveOverlayScreen.NONE
+                                    overlayScreen = ActiveOverlayScreen.SETTINGS
+                                },
                                 onMarkAllAsSeen = { markAllVideosAsSeen() },
                                 onNavigateToTreePath = { path -> currentTreePath = path.trim('/') },
                                 onNavigateUpTree = {
@@ -1832,7 +2027,9 @@ fun AuraPlayerApp(
                                 onSelectStorageVolume = { volId ->
                                     selectedStorageVolumeId = volId
                                     currentTreePath = ""
-                                }
+                                },
+                                selectedQuickFilter = selectedQuickFilter,
+                                onSelectQuickFilter = { selectedQuickFilter = it }
                             )
 
                             // Innermost root BackHandler for multi-select priority

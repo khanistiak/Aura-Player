@@ -219,7 +219,7 @@ fun DirectoryBrowserScreen(
 
     // Reset list/grid scroll position safely when switching folders or tabs so transitioning from a
     // subfolder back to root never leaves LazyListState pointing at an out-of-range item index.
-    LaunchedEffect(cleanTreePath, selectedFlatFolderPath, selectedTab) {
+    LaunchedEffect(cleanTreePath, selectedFlatFolderPath, selectedTab, selectedQuickFilter) {
         runCatching { listState.scrollToItem(0) }
         runCatching { gridState.scrollToItem(0) }
     }
@@ -255,7 +255,8 @@ fun DirectoryBrowserScreen(
                 watchedVideoIds = settings.watchedVideoIds,
                 seenBaselineEpochSec = settings.seenBaselineEpochSec,
                 showNewLabel = settings.showNewVideoLabel,
-                newLabelDaysThreshold = settings.newVideoLabelDaysThreshold
+                newLabelDaysThreshold = settings.newVideoLabelDaysThreshold,
+                playbackProgress = playbackProgress
             )
         ) {
             return false
@@ -276,7 +277,8 @@ fun DirectoryBrowserScreen(
         settings.watchedVideoIds,
         settings.seenBaselineEpochSec,
         settings.showNewVideoLabel,
-        settings.newVideoLabelDaysThreshold
+        settings.newVideoLabelDaysThreshold,
+        playbackProgress
     ) {
         if (!isFilterActive) allVideos
         else allVideos.filter { videoMatchesActiveFilters(it, matchFolderNameOnAll = true) }
@@ -289,7 +291,8 @@ fun DirectoryBrowserScreen(
         settings.watchedVideoIds,
         settings.seenBaselineEpochSec,
         settings.showNewVideoLabel,
-        settings.newVideoLabelDaysThreshold
+        settings.newVideoLabelDaysThreshold,
+        playbackProgress
     ) {
         if (!isFilterActive) flatFolders
         else flatFolders.mapNotNull { folder ->
@@ -316,7 +319,8 @@ fun DirectoryBrowserScreen(
         settings.watchedVideoIds,
         settings.seenBaselineEpochSec,
         settings.showNewVideoLabel,
-        settings.newVideoLabelDaysThreshold
+        settings.newVideoLabelDaysThreshold,
+        playbackProgress
     ) {
         rawActiveFlatFolder?.let { folder ->
             if (!isFilterActive) folder
@@ -332,6 +336,7 @@ fun DirectoryBrowserScreen(
         settings.seenBaselineEpochSec,
         settings.showNewVideoLabel,
         settings.newVideoLabelDaysThreshold,
+        playbackProgress,
         settings.sortField,
         settings.sortAscending
     ) {

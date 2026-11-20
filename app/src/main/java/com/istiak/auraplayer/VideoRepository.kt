@@ -736,7 +736,10 @@ class VideoRepository(private val context: Context) {
                     // Detect sidecar .srt/.vtt/.ass file or embedded subtitle stream marker
                     val sidecarSrtExists = if (!dataPath.isNullOrBlank()) {
                         val base = dataPath.substringBeforeLast('.')
-                        File("$base.srt").exists() || File("$base.vtt").exists() || File("$base.ass").exists()
+                        File("$base.srt").exists() ||
+                            File("$base.vtt").exists() ||
+                            File("$base.ass").exists() ||
+                            File("$base.sub").exists()
                     } else {
                         false
                     }
