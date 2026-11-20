@@ -4,9 +4,6 @@ import android.content.Context
 import android.media.MediaScannerConnection
 import android.os.Environment
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -42,7 +39,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Info
@@ -116,7 +112,6 @@ import com.istiak.auraplayer.ui.components.rememberScrollAwareGlassLayout
 import com.istiak.auraplayer.ui.theme.DangerRed
 import com.istiak.auraplayer.ui.theme.LocalExtendedPalette
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -208,8 +203,6 @@ fun DirectoryBrowserScreen(
     )
 
     var internalRefreshing by remember { mutableStateOf(false) }
-    var showLibraryUpdatedPill by remember { mutableStateOf(false) }
-    var libraryUpdatedMessage by remember { mutableStateOf("Library updated") }
     val effectiveRefreshing = isRefreshing || internalRefreshing
 
     val cleanTreePath = currentTreePath.trim('/')
@@ -236,13 +229,6 @@ fun DirectoryBrowserScreen(
     // Innermost BackHandler: always exit multi-select mode first without leaving the current folder.
     BackHandler(enabled = isMultiSelectMode) {
         onClearSelection()
-    }
-
-    LaunchedEffect(showLibraryUpdatedPill) {
-        if (showLibraryUpdatedPill) {
-            delay(2200L)
-            showLibraryUpdatedPill = false
-        }
     }
 
     val trimmedQuery = searchQuery.trim()
@@ -376,7 +362,6 @@ fun DirectoryBrowserScreen(
                 internalRefreshing = true
                 onRefresh()
                 coroutineScope.launch {
-                    val previousIds = allVideos.map { it.id }.toSet()
                     val scanned = withContext(Dispatchers.IO) {
                         val repo = VideoRepository(context.applicationContext)
                         val vaultMgr = PrivateVaultManager(context.applicationContext)
@@ -417,15 +402,8 @@ fun DirectoryBrowserScreen(
                             itemPath in lockedPaths
                         }
                     }
-                    val newCount = scanned.count { it.id !in previousIds }
                     onScannedVideosUpdated(scanned)
                     internalRefreshing = false
-                    libraryUpdatedMessage = if (newCount > 0) {
-                        "Library updated (+$newCount new)"
-                    } else {
-                        "Library updated"
-                    }
-                    showLibraryUpdatedPill = true
                 }
             },
             headerTopPadding = measuredHeaderTopDp,
@@ -950,46 +928,6 @@ fun DirectoryBrowserScreen(
                         }
                     }
                 }
-            }
-        }
-
-        // Subtle "Library updated" feedback pill below the floating top header pill
-        androidx.compose.animation.AnimatedVisibility(
-            visible = showLibraryUpdatedPill,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = measuredHeaderTopDp + 10.dp)
-        ) {
-            val primaryAccent = MaterialTheme.colorScheme.primary
-            val pillShape = RoundedCornerShape(50)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier
-                    .clip(pillShape)
-                    .background(if (isDark) palette.sheetBackground.copy(alpha = 0.94f) else Color.White.copy(alpha = 0.94f))
-                    .border(
-                        width = 0.8.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                        shape = pillShape
-                    )
-                    .padding(horizontal = 14.dp, vertical = 7.dp)
-                    .testTag("library_updated_pill")
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = primaryAccent,
-                    modifier = Modifier.size(15.dp)
-                )
-                Text(
-                    text = libraryUpdatedMessage,
-                    color = palette.primaryText,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
             }
         }
 
