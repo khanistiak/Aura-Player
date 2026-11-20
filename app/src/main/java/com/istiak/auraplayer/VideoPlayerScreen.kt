@@ -580,6 +580,7 @@ fun VideoPlayerScreen(
     var externalSubtitleUris by remember(currentVideo.uri) {
         mutableStateOf<List<Triple<Uri, String, String>>>(emptyList())
     }
+    var pendingExternalSubtitleLabel by remember(currentVideo.uri) { mutableStateOf<String?>(null) }
     var rememberedMemory by remember(currentVideo.id) { mutableStateOf<VideoPlaybackMemory?>(null) }
     var hasAppliedRememberedTracks by remember(currentVideo.id) { mutableStateOf(false) }
     var selectedAudioGroupIdx by remember(currentVideo.id) { mutableIntStateOf(-1) }
@@ -732,18 +733,23 @@ fun VideoPlayerScreen(
     }
 
     fun attachSubtitleUriToPlayer(subUri: Uri, subMime: String, subLabel: String, localPath: String? = null) {
-        externalSubtitleUris = externalSubtitleUris + Triple(subUri, subMime, subLabel)
+        val updatedSubs = externalSubtitleUris.filterNot { it.first == subUri } + Triple(subUri, subMime, subLabel)
+        externalSubtitleUris = updatedSubs
         if (localPath != null) {
             latestExternalSubPath = localPath
         }
         val resumeAt = exoPlayer.currentPosition.coerceAtLeast(0L)
-        val subs = externalSubtitleUris.mapIndexed { idx, (u, m, l) ->
-            MediaItem.SubtitleConfiguration.Builder(u)
-                .setMimeType(m)
-                .setLanguage("en")
-                .setLabel("External ${idx + 1}: $l")
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                .build()
+        val targetLabel = "External ${updatedSubs.size}: $subLabel"
+        pendingExternalSubtitleLabel = targetLabel
+        val subs = updatedSubs.mapIndexed { idx, (u, m, l) ->
+            SubtitleUtils.buildSubtitleConfiguration(
+                uri = u,
+                mimeType = m,
+                label = "External ${idx + 1}: $l",
+                id = "ext_${idx + 1}",
+                language = "en",
+                isDefault = idx == updatedSubs.lastIndex
+            )
         }
         val directPlaybackUri = if (currentVideo.isVaultItem && !currentVideo.vaultFilePath.isNullOrBlank()) {
             Uri.fromFile(File(currentVideo.vaultFilePath))
@@ -760,9 +766,13 @@ fun VideoPlayerScreen(
             )
             .setSubtitleConfigurations(subs)
             .build()
-        exoPlayer.setMediaItem(mediaItem)
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .build()
+        exoPlayer.setMediaItem(mediaItem, resumeAt)
         exoPlayer.prepare()
-        exoPlayer.seekTo(resumeAt)
         areSubtitlesEnabled = true
         persistCurrentVideoMemory(resumeAt)
         showCenterToast("Loaded Subtitle: $subLabel")
@@ -778,14 +788,20 @@ fun VideoPlayerScreen(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             }
-            val mimeType = when {
-                uri.toString().endsWith(".ass", ignoreCase = true) ||
-                    uri.toString().endsWith(".ssa", ignoreCase = true) -> MimeTypes.TEXT_SSA
-                uri.toString().endsWith(".vtt", ignoreCase = true) -> MimeTypes.TEXT_VTT
-                else -> MimeTypes.APPLICATION_SUBRIP
+            coroutineScope.launch {
+                SubtitleUtils.prepareExternalSubtitle(context, uri)
+                    .onSuccess { prepared ->
+                        attachSubtitleUriToPlayer(
+                            subUri = prepared.uri,
+                            subMime = prepared.mimeType,
+                            subLabel = prepared.label,
+                            localPath = prepared.localFile.absolutePath
+                        )
+                    }
+                    .onFailure { error ->
+                        showCenterToast(error.message ?: "Failed to load subtitle file")
+                    }
             }
-            val label = uri.lastPathSegment?.substringAfterLast('/') ?: "External Subtitle"
-            attachSubtitleUriToPlayer(uri, mimeType, label)
         }
     }
 
@@ -973,7 +989,7 @@ fun VideoPlayerScreen(
                     latestExternalSubPath = extFile.absolutePath
                     externalSubtitleUris = externalSubtitleUris + Triple(
                         Uri.fromFile(extFile),
-                        MimeTypes.APPLICATION_SUBRIP,
+                        SubtitleUtils.mimeTypeForFilename(extFile.name),
                         extFile.name
                     )
                 }
@@ -981,12 +997,14 @@ fun VideoPlayerScreen(
         }
 
         val subs = externalSubtitleUris.mapIndexed { idx, (subUri, subMime, subLabel) ->
-            MediaItem.SubtitleConfiguration.Builder(subUri)
-                .setMimeType(subMime)
-                .setLanguage("en")
-                .setLabel("External ${idx + 1}: $subLabel")
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                .build()
+            SubtitleUtils.buildSubtitleConfiguration(
+                uri = subUri,
+                mimeType = subMime,
+                label = "External ${idx + 1}: $subLabel",
+                id = "ext_${idx + 1}",
+                language = "en",
+                isDefault = idx == externalSubtitleUris.lastIndex
+            )
         }
         val directPlaybackUri = if (currentVideo.isVaultItem && !currentVideo.vaultFilePath.isNullOrBlank()) {
             Uri.fromFile(File(currentVideo.vaultFilePath))
@@ -1454,6 +1472,26 @@ fun VideoPlayerScreen(
                 val (parsedAudio, parsedSubs) = parseExoTracks(tracks)
                 audioTracks = parsedAudio
                 subtitleTracks = parsedSubs
+
+                val pendingLabel = pendingExternalSubtitleLabel
+                if (pendingLabel != null) {
+                    val matchedExternal = parsedSubs.lastOrNull { it.label == pendingLabel }
+                        ?: parsedSubs.lastOrNull { it.isExternal }
+                    val matchedGroup = matchedExternal?.let { tracks.groups.getOrNull(it.groupIndex) }
+                    if (matchedExternal != null && matchedGroup != null) {
+                        pendingExternalSubtitleLabel = null
+                        areSubtitlesEnabled = true
+                        selectedSubtitleGroupIdx = matchedExternal.groupIndex
+                        selectedSubtitleTrackIdx = matchedExternal.trackIndex
+                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(
+                                TrackSelectionOverride(matchedGroup.mediaTrackGroup, matchedExternal.trackIndex)
+                            )
+                            .build()
+                    }
+                }
 
                 if (!hasAppliedRememberedTracks) {
                     hasAppliedRememberedTracks = true
@@ -3764,7 +3802,7 @@ fun VideoPlayerScreen(
                             lastInteractionTick++
                         },
                         onOpenExternalSubtitle = {
-                            openSubtitleLauncher.launch(arrayOf("*/*"))
+                            openSubtitleLauncher.launch(SubtitleUtils.PICKER_MIME_TYPES)
                             lastInteractionTick++
                         },
                         onSearchOnlineSubtitles = {

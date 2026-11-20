@@ -1259,6 +1259,95 @@ class ExampleRobolectricTest {
             mp4Temp.delete()
         }
     }
+
+    @Test
+    fun `subtitle utils strips UTF-8 and UTF-16 BOMs and copies clean UTF-8 into filesDir subtitles`(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertTrue("*/*" in SubtitleUtils.PICKER_MIME_TYPES)
+        assertTrue("application/zip" in SubtitleUtils.PICKER_MIME_TYPES)
+
+        val srtBody = "1\n00:00:01,000 --> 00:00:04,000\nHello World — Café\n"
+        val utf8BomBytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+            srtBody.toByteArray(Charsets.UTF_8)
+        val utf16LeBomBytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) +
+            srtBody.toByteArray(Charsets.UTF_16LE)
+        val utf16BeBomBytes = byteArrayOf(0xFE.toByte(), 0xFF.toByte()) +
+            srtBody.toByteArray(Charsets.UTF_16BE)
+
+        assertEquals(srtBody, SubtitleUtils.decodeToCleanUtf8(utf8BomBytes))
+        assertEquals(srtBody, SubtitleUtils.decodeToCleanUtf8(utf16LeBomBytes))
+        assertEquals(srtBody, SubtitleUtils.decodeToCleanUtf8(utf16BeBomBytes))
+
+        val stagingDir = File(context.cacheDir, "test_ext_subs").apply { mkdirs() }
+        val utf16AssFile = File(stagingDir, "episode01.ass")
+        val assBody = "[Script Info]\nTitle: Test\n[Events]\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Line 1\n"
+        utf16AssFile.writeBytes(
+            byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + assBody.toByteArray(Charsets.UTF_16LE)
+        )
+
+        val preparedAss = SubtitleUtils.prepareExternalSubtitle(context, Uri.fromFile(utf16AssFile)).getOrThrow()
+        assertEquals(androidx.media3.common.MimeTypes.TEXT_SSA, preparedAss.mimeType)
+        assertEquals("file", preparedAss.uri.scheme)
+        assertEquals("subtitles", preparedAss.localFile.parentFile?.name)
+        assertEquals(context.filesDir.absolutePath, preparedAss.localFile.parentFile?.parentFile?.absolutePath)
+        val writtenBytes = preparedAss.localFile.readBytes()
+        assertFalse(
+            writtenBytes.size >= 3 &&
+                writtenBytes[0] == 0xEF.toByte() &&
+                writtenBytes[1] == 0xBB.toByte() &&
+                writtenBytes[2] == 0xBF.toByte()
+        )
+        assertEquals(assBody, String(writtenBytes, Charsets.UTF_8))
+
+        val subConfig = SubtitleUtils.buildSubtitleConfiguration(
+            uri = preparedAss.uri,
+            mimeType = preparedAss.mimeType,
+            label = "External 1: ${preparedAss.label}"
+        )
+        assertEquals(preparedAss.uri, subConfig.uri)
+        assertEquals(androidx.media3.common.MimeTypes.TEXT_SSA, subConfig.mimeType)
+
+        stagingDir.deleteRecursively()
+    }
+
+    @Test
+    fun `subtitle utils extracts first subtitle entry from zip archive into filesDir subtitles`(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val stagingDir = File(context.cacheDir, "test_zip_subs").apply { mkdirs() }
+        val zipFile = File(stagingDir, "downloaded_subtitles.zip")
+        val vttBody = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nZip extracted VTT cue\n"
+
+        java.util.zip.ZipOutputStream(zipFile.outputStream()).use { zos ->
+            // macOS junk metadata entry should be skipped
+            zos.putNextEntry(java.util.zip.ZipEntry("__MACOSX/._movie.vtt"))
+            zos.write(byteArrayOf(0x00, 0x05, 0x16, 0x07))
+            zos.closeEntry()
+
+            // Non-subtitle readme should be skipped
+            zos.putNextEntry(java.util.zip.ZipEntry("README.txt"))
+            zos.write("Downloaded from web".toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            // First valid subtitle entry (with UTF-8 BOM)
+            zos.putNextEntry(java.util.zip.ZipEntry("subs/movie.en.vtt"))
+            zos.write(
+                byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+                    vttBody.toByteArray(Charsets.UTF_8)
+            )
+            zos.closeEntry()
+        }
+
+        val prepared = SubtitleUtils.prepareExternalSubtitle(context, Uri.fromFile(zipFile)).getOrThrow()
+        assertEquals(androidx.media3.common.MimeTypes.TEXT_VTT, prepared.mimeType)
+        assertEquals("movie.en.vtt", prepared.label)
+        assertEquals("subtitles", prepared.localFile.parentFile?.name)
+        assertEquals(context.filesDir.absolutePath, prepared.localFile.parentFile?.parentFile?.absolutePath)
+        assertEquals(Uri.fromFile(prepared.localFile), prepared.uri)
+        assertEquals(vttBody, prepared.localFile.readText(Charsets.UTF_8))
+
+        stagingDir.deleteRecursively()
+    }
 }
+
 
 
