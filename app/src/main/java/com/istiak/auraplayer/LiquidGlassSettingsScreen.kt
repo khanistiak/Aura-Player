@@ -1,6 +1,11 @@
 package com.istiak.auraplayer
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -346,54 +351,62 @@ fun LiquidGlassSettingsScreen(
                             testTag = "lg_toggle_vibrancy"
                         )
 
-                        HorizontalDivider(
-                            thickness = 1.dp,
-                            color = dividerColor,
-                            modifier = Modifier.padding(horizontal = 14.dp)
-                        )
+                        AnimatedVisibility(
+                            visible = effectiveConfig.vibrancyEnabled,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut()
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                HorizontalDivider(
+                                    thickness = 1.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(horizontal = 14.dp)
+                                )
 
-                        LgSliderRow(
-                            icon = Icons.Filled.InvertColors,
-                            title = "Saturation",
-                            value = effectiveConfig.saturation,
-                            valueRange = 0f..2f,
-                            enabled = controlsEnabled,
-                            onValueChange = onUpdateSaturation,
-                            testTag = "lg_slider_saturation"
-                        )
+                                LgSliderRow(
+                                    icon = Icons.Filled.InvertColors,
+                                    title = "Saturation",
+                                    value = effectiveConfig.saturation,
+                                    valueRange = 0f..2f,
+                                    enabled = controlsEnabled,
+                                    onValueChange = onUpdateSaturation,
+                                    testTag = "lg_slider_saturation"
+                                )
 
-                        HorizontalDivider(
-                            thickness = 1.dp,
-                            color = dividerColor,
-                            modifier = Modifier.padding(horizontal = 14.dp)
-                        )
+                                HorizontalDivider(
+                                    thickness = 1.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(horizontal = 14.dp)
+                                )
 
-                        LgSliderRow(
-                            icon = Icons.Filled.Brightness6,
-                            title = "Brightness",
-                            value = effectiveConfig.brightness,
-                            valueRange = -0.50f..0.50f,
-                            signedPercent = true,
-                            enabled = controlsEnabled,
-                            onValueChange = onUpdateBrightness,
-                            testTag = "lg_slider_brightness"
-                        )
+                                LgSliderRow(
+                                    icon = Icons.Filled.Brightness6,
+                                    title = "Brightness",
+                                    value = effectiveConfig.brightness,
+                                    valueRange = -0.50f..0.50f,
+                                    signedPercent = true,
+                                    enabled = controlsEnabled,
+                                    onValueChange = onUpdateBrightness,
+                                    testTag = "lg_slider_brightness"
+                                )
 
-                        HorizontalDivider(
-                            thickness = 1.dp,
-                            color = dividerColor,
-                            modifier = Modifier.padding(horizontal = 14.dp)
-                        )
+                                HorizontalDivider(
+                                    thickness = 1.dp,
+                                    color = dividerColor,
+                                    modifier = Modifier.padding(horizontal = 14.dp)
+                                )
 
-                        LgSliderRow(
-                            icon = Icons.Filled.Contrast,
-                            title = "Contrast",
-                            value = effectiveConfig.contrast,
-                            valueRange = 0.50f..1.50f,
-                            enabled = controlsEnabled,
-                            onValueChange = onUpdateContrast,
-                            testTag = "lg_slider_contrast"
-                        )
+                                LgSliderRow(
+                                    icon = Icons.Filled.Contrast,
+                                    title = "Contrast",
+                                    value = effectiveConfig.contrast,
+                                    valueRange = 0.50f..1.50f,
+                                    enabled = controlsEnabled,
+                                    onValueChange = onUpdateContrast,
+                                    testTag = "lg_slider_contrast"
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -574,25 +587,25 @@ private fun LiquidGlassStickyPreviewSection(
     } else {
         palette.outlineBorder.copy(alpha = 0.85f)
     }
-    // Rich, high-saturation vibrant checkerboard colors with zero dulling white wash
-    val lightVividTiles = remember {
+    // Soft, low-saturation pastel lavender and pink checkerboard tiles
+    val lightPastelTiles = remember {
         listOf(
-            Color(0xFF6366F1), // Vivid Periwinkle Blue
-            Color(0xFFEC4899), // Vibrant Rose-Pink
-            Color(0xFF818CF8), // Luminous Indigo-Periwinkle
-            Color(0xFFF472B6), // Bright Flamingo Pink
-            Color(0xFF06B6D4), // Vivid Cyan Accent
-            Color(0xFF8B5CF6)  // Rich Violet Accent
+            Color(0xFFC5BCE8), // Soft Pastel Lavender
+            Color(0xFFF4C8DE), // Soft Pastel Pink
+            Color(0xFFD3CCF0), // Pale Lilac Lavender
+            Color(0xFFF8D8E8), // Soft Petal Pink
+            Color(0xFFE9C7E0), // Soft Orchid Pink
+            Color(0xFFE6C2D9)  // Soft Dusty Mauve-Pink
         )
     }
-    val darkVividTiles = remember {
+    val darkPastelTiles = remember {
         listOf(
-            Color(0xFF3730A3), // Rich Indigo
-            Color(0xFF86198F), // Deep Vibrant Magenta
-            Color(0xFF4338CA), // Saturated Royal Indigo
-            Color(0xFF9D174D), // Rich Crimson-Rose
-            Color(0xFF0E7490), // Deep Cyan
-            Color(0xFF5B21B6)  // Deep Violet
+            Color(0xFF4B4668), // Muted Dusky Lavender
+            Color(0xFF72536A), // Soft Dusky Rose-Pink
+            Color(0xFF585278), // Soft Muted Lilac
+            Color(0xFF826078), // Muted Pastel Blush
+            Color(0xFF6A5572), // Soft Muted Mauve
+            Color(0xFF7A5B73)  // Dusty Orchid Pink
         )
     }
 
@@ -612,7 +625,7 @@ private fun LiquidGlassStickyPreviewSection(
                 .border(1.dp, frameBorder, previewShape)
                 .testTag("liquid_glass_live_preview_card")
         ) {
-            // Recorded High-Contrast Vibrant Checkerboard Backdrop
+            // Recorded Soft Pastel Checkerboard Backdrop
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -624,7 +637,7 @@ private fun LiquidGlassStickyPreviewSection(
                 val cellSize = 24.dp.toPx().coerceAtLeast(16f)
                 val cols = ceil(size.width / cellSize).toInt() + 1
                 val rows = ceil(size.height / cellSize).toInt() + 1
-                val activeTiles = if (isDark) darkVividTiles else lightVividTiles
+                val activeTiles = if (isDark) darkPastelTiles else lightPastelTiles
 
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {

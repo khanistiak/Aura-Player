@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -92,6 +93,7 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
     uniform float refractionDispPx;
     uniform float chromaticShiftPx;
     uniform float isHeader;
+    uniform float depthEffect;
 
     float sdRoundedBox(float2 p, float2 b, float r) {
         float2 q = abs(p) - b + float2(r);
@@ -106,6 +108,7 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
 
         float2 n;
         float edgeT;
+        float inwardDist = 0.0;
         if (isHeader > 0.5) {
             float opticalBottomY = resolution.y;
             float headerBand = max(band * 1.65, 2.0);
@@ -117,6 +120,7 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
             float distSide = min(distLeft, distRight);
             float sideT = clamp(1.0 - (distSide / band), 0.0, 1.0) * 0.65;
 
+            inwardDist = min(distBottom, distSide);
             if (bottomT >= sideT) {
                 edgeT = bottomT;
                 n = float2(0.0, 1.0);
@@ -126,7 +130,7 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
             }
         } else {
             float d = sdRoundedBox(fragCoord - center, center, r);
-            float inwardDist = max(0.0, -d);
+            inwardDist = max(0.0, -d);
             float eps = 1.0;
             float dx = sdRoundedBox(fragCoord + float2(eps, 0.0) - center, center, r)
                      - sdRoundedBox(fragCoord - float2(eps, 0.0) - center, center, r);
@@ -138,19 +142,51 @@ private const val LIQUID_GLASS_REFRACTION_AGSL = """
             edgeT = clamp(1.0 - (inwardDist / band), 0.0, 1.0);
         }
 
+        // Depth effect: background parallax separation & convex glass depth bow
+        float2 parallaxSample = fragCoord;
+        if (depthEffect > 0.001) {
+            float normY = clamp(fragCoord.y / max(resolution.y, 1.0), 0.0, 1.0);
+            float depthScale = 1.0 - (0.045 * depthEffect);
+            float parallaxY = min(resolution.y * 0.09, 7.0) * depthEffect;
+            float bowShiftY = (0.5 - normY) * min(resolution.y * 0.05, 4.0) * depthEffect;
+            parallaxSample = center + (fragCoord - center) * depthScale - float2(0.0, parallaxY + bowShiftY);
+        }
+
         float lensCurve = edgeT * edgeT;
         float dispMul = (isHeader > 0.5) ? 1.35 : 1.0;
-        float2 samplePos = clamp(fragCoord - n * (lensCurve * refractionDispPx * dispMul), float2(0.0), maxCoord);
+        float depthRefractionBoost = 1.0 + (0.25 * depthEffect);
+        float2 samplePos = clamp(
+            parallaxSample - n * (lensCurve * refractionDispPx * dispMul * depthRefractionBoost),
+            float2(0.0),
+            maxCoord
+        );
 
+        half4 outColor;
         if (chromaticShiftPx > 0.05 && lensCurve > 0.001) {
             float2 chromaOffset = n * (lensCurve * chromaticShiftPx * dispMul);
             half4 cR = content.eval(clamp(samplePos - chromaOffset, float2(0.0), maxCoord));
             half4 cG = content.eval(samplePos);
             half4 cB = content.eval(clamp(samplePos + chromaOffset, float2(0.0), maxCoord));
-            return half4(cR.r, cG.g, cB.b, cG.a);
+            outColor = half4(cR.r, cG.g, cB.b, cG.a);
+        } else {
+            outColor = content.eval(samplePos);
         }
 
-        return content.eval(samplePos);
+        // Optical recessed inner shadow & top-rim specular catchlight in premultiplied shader space
+        if (depthEffect > 0.001 && isHeader <= 0.5) {
+            float normY = clamp(fragCoord.y / max(resolution.y, 1.0), 0.0, 1.0);
+            float rimSpan = max(min(resolution.x, resolution.y) * 0.36, 6.0);
+            float rimMask = clamp(1.0 - (inwardDist / rimSpan), 0.0, 1.0);
+            float innerShadow = rimMask * rimMask * (0.26 + 0.74 * smoothstep(0.16, 0.95, normY));
+            float topSpecular = rimMask * rimMask * (1.0 - smoothstep(0.0, 0.42, normY));
+
+            half shadowFactor = half(clamp(1.0 - (0.24 * innerShadow * depthEffect), 0.65, 1.0));
+            half specAdd = half(clamp(0.22 * topSpecular * depthEffect, 0.0, 0.35));
+            outColor.rgb *= shadowFactor;
+            outColor.rgb = min(outColor.rgb + half3(specAdd * outColor.a), half3(outColor.a));
+        }
+
+        return outColor;
     }
 """
 
@@ -909,12 +945,12 @@ fun FrostedGlassSurface(
         Modifier.crystalOuterShadow(
             shape = shape,
             color = if (isDarkHeader) {
-                Color.Black.copy(alpha = 0.50f * effectiveGlassProgress)
+                Color.Black.copy(alpha = 0.62f * effectiveGlassProgress)
             } else {
-                Color(0xFF0F172A).copy(alpha = 0.22f * effectiveGlassProgress)
+                Color(0xFF0F172A).copy(alpha = 0.32f * effectiveGlassProgress)
             },
-            blurSpread = 18.dp,
-            offsetY = 6.dp
+            blurSpread = 22.dp,
+            offsetY = 8.dp
         )
     } else {
         Modifier
@@ -1025,7 +1061,7 @@ fun FrostedGlassSurface(
                                         agslRuntimeShader != null &&
                                         layerW > 1f &&
                                         layerH > 1f &&
-                                        (refractionDispPx > 0.25f || chromaticShiftPx > 0.05f)
+                                        (refractionDispPx > 0.25f || chromaticShiftPx > 0.05f || glassConfig.depthEffect)
 
                                     if (canUseAgsl && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                         val agslComposeEffect = runCatching {
@@ -1041,6 +1077,10 @@ fun FrostedGlassSurface(
                                             shader.setFloatUniform("refractionDispPx", refractionDispPx)
                                             shader.setFloatUniform("chromaticShiftPx", chromaticShiftPx)
                                             shader.setFloatUniform("isHeader", 0f)
+                                            shader.setFloatUniform(
+                                                "depthEffect",
+                                                if (glassConfig.depthEffect) effectiveGlassProgress else 0f
+                                            )
                                             val shaderEffect = android.graphics.RenderEffect.createRuntimeShaderEffect(
                                                 shader,
                                                 "content"
@@ -1131,20 +1171,62 @@ fun FrostedGlassSurface(
                                         right = size.width,
                                         bottom = size.height
                                     )
+                                    val depthActive = isLiveGlassActive &&
+                                        glassConfig.depthEffect &&
+                                        effectiveGlassProgress > 0.01f
+                                    val depthFactor = if (depthActive) effectiveGlassProgress else 0f
+                                    val pivotCenter = Offset(size.width * 0.5f, size.height * 0.5f)
+
                                     if (bgLayer != null) {
                                         val bgOrigin = backdropState.backgroundOriginInRoot
+                                        val bgParallaxY = if (depthActive) {
+                                            (if (isFullWidthHeader) 1.5.dp else 2.5.dp).toPx() * depthFactor
+                                        } else {
+                                            0f
+                                        }
                                         val bgDx = bgOrigin.x - surfaceRootOffset.x
-                                        val bgDy = bgOrigin.y - surfaceRootOffset.y
-                                        translate(left = bgDx, top = bgDy) {
-                                            drawLayer(bgLayer)
+                                        val bgDy = bgOrigin.y - surfaceRootOffset.y + bgParallaxY
+                                        if (depthActive) {
+                                            val bgScale = 1f + (if (isFullWidthHeader) 0.015f else 0.025f) * depthFactor
+                                            scale(
+                                                scaleX = bgScale,
+                                                scaleY = bgScale,
+                                                pivot = pivotCenter
+                                            ) {
+                                                translate(left = bgDx, top = bgDy) {
+                                                    drawLayer(bgLayer)
+                                                }
+                                            }
+                                        } else {
+                                            translate(left = bgDx, top = bgDy) {
+                                                drawLayer(bgLayer)
+                                            }
                                         }
                                     }
                                     if (candidateLayer != null && isLayerValid) {
                                         val contentOrigin = backdropState?.backdropRootOffset ?: Offset.Zero
+                                        val contentParallaxY = if (depthActive) {
+                                            (if (isFullWidthHeader) 3.dp else 5.5.dp).toPx() * depthFactor
+                                        } else {
+                                            0f
+                                        }
                                         val dx = contentOrigin.x - surfaceRootOffset.x
-                                        val dy = contentOrigin.y - surfaceRootOffset.y
-                                        translate(left = dx, top = dy) {
-                                            drawLayer(candidateLayer)
+                                        val dy = contentOrigin.y - surfaceRootOffset.y + contentParallaxY
+                                        if (depthActive) {
+                                            val contentScale = 1f + (if (isFullWidthHeader) 0.03f else 0.065f) * depthFactor
+                                            scale(
+                                                scaleX = contentScale,
+                                                scaleY = contentScale,
+                                                pivot = pivotCenter
+                                            ) {
+                                                translate(left = dx, top = dy) {
+                                                    drawLayer(candidateLayer)
+                                                }
+                                            }
+                                        } else {
+                                            translate(left = dx, top = dy) {
+                                                drawLayer(candidateLayer)
+                                            }
                                         }
                                     }
                                     canvas.restore()
@@ -1183,6 +1265,31 @@ fun FrostedGlassSurface(
                             modifier = Modifier
                                 .matchParentSize()
                                 .drawBehind {
+                                    if (glassConfig.depthEffect) {
+                                        val shadowBandH = 12.dp.toPx().coerceAtMost(size.height * 0.35f)
+                                        val shadowAlpha = (if (isDarkHeader) 0.34f else 0.14f) * effectiveGlassProgress
+                                        drawRect(
+                                            brush = Brush.verticalGradient(
+                                                colors = listOf(
+                                                    Color.Transparent,
+                                                    Color(0xFF090D1A).copy(alpha = shadowAlpha)
+                                                ),
+                                                startY = (size.height - shadowBandH).coerceAtLeast(0f),
+                                                endY = size.height
+                                            ),
+                                            topLeft = Offset(0f, (size.height - shadowBandH).coerceAtLeast(0f)),
+                                            size = Size(size.width, shadowBandH)
+                                        )
+                                        val topSpecStroke = 1.2.dp.toPx()
+                                        drawLine(
+                                            color = Color.White.copy(
+                                                alpha = (if (isDarkHeader) 0.32f else 0.62f) * effectiveGlassProgress
+                                            ),
+                                            start = Offset(0f, topSpecStroke * 0.5f),
+                                            end = Offset(size.width, topSpecStroke * 0.5f),
+                                            strokeWidth = topSpecStroke
+                                        )
+                                    }
                                     val strokePx = 0.5.dp.toPx()
                                     val lineY = (size.height - strokePx * 0.5f).coerceAtLeast(strokePx * 0.5f)
                                     drawLine(
@@ -1251,16 +1358,98 @@ private fun DrawScope.drawLiquidGlassEdgeReflection(
     val edgeBand = refractionEdgeWidthPx.coerceIn(1.dp.toPx(), minOf(w, h) * 0.45f)
 
     if (glassConfig.depthEffect) {
-        val aoAlpha = (if (isDarkHeader) 0.40f else 0.16f) * effectiveGlassProgress
-        val aoStroke = (3.5.dp.toPx() + edgeBand * 0.15f).coerceAtMost(10.dp.toPx())
+        val shadowTint = Color(0xFF080C18)
+        val deepShadowAlpha = (if (isDarkHeader) 0.62f else 0.34f) * effectiveGlassProgress
+        val wideShadowAlpha = (if (isDarkHeader) 0.42f else 0.22f) * effectiveGlassProgress
+
+        // 1. Subtle lower recessed interior depth wash for thick-glass cavity feel
         drawRoundRect(
             brush = Brush.verticalGradient(
-                0.0f to Color.Black.copy(alpha = aoAlpha * 0.85f),
-                0.45f to Color.Black.copy(alpha = aoAlpha * 0.18f),
-                1.0f to Color.White.copy(alpha = aoAlpha * 0.55f)
+                0.0f to Color.Transparent,
+                0.56f to Color.Transparent,
+                0.84f to shadowTint.copy(alpha = deepShadowAlpha * 0.22f),
+                1.0f to shadowTint.copy(alpha = deepShadowAlpha * 0.44f)
             ),
-            cornerRadius = CornerRadius(cornerR, cornerR),
-            style = Stroke(width = aoStroke)
+            cornerRadius = CornerRadius(cornerR, cornerR)
+        )
+
+        // 2. Wide, feathered recessed inner shadow stroke inset completely inside the clipped perimeter
+        val wideStroke = (7.dp.toPx() + edgeBand * 0.22f).coerceAtMost(minOf(w, h) * 0.26f)
+        val wideInset = wideStroke * 0.45f
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                0.0f to shadowTint.copy(alpha = wideShadowAlpha * 0.16f),
+                0.38f to shadowTint.copy(alpha = wideShadowAlpha * 0.42f),
+                0.78f to shadowTint.copy(alpha = wideShadowAlpha * 0.82f),
+                1.0f to shadowTint.copy(alpha = wideShadowAlpha)
+            ),
+            topLeft = Offset(wideInset, wideInset),
+            size = Size(
+                (w - wideInset * 2f).coerceAtLeast(1f),
+                (h - wideInset * 2f).coerceAtLeast(1f)
+            ),
+            cornerRadius = CornerRadius(
+                (cornerR - wideInset).coerceAtLeast(0f),
+                (cornerR - wideInset).coerceAtLeast(0f)
+            ),
+            style = Stroke(width = wideStroke)
+        )
+
+        // 3. Tight, deep inner recessed wall shadow hugging the lower & side interior bevel
+        val coreStroke = (3.2.dp.toPx() + edgeBand * 0.10f).coerceAtMost(7.dp.toPx())
+        val coreInset = coreStroke * 0.5f
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                0.0f to Color.Transparent,
+                0.28f to shadowTint.copy(alpha = deepShadowAlpha * 0.28f),
+                0.68f to shadowTint.copy(alpha = deepShadowAlpha * 0.78f),
+                1.0f to shadowTint.copy(alpha = deepShadowAlpha)
+            ),
+            topLeft = Offset(coreInset, coreInset),
+            size = Size(
+                (w - coreInset * 2f).coerceAtLeast(1f),
+                (h - coreInset * 2f).coerceAtLeast(1f)
+            ),
+            cornerRadius = CornerRadius(
+                (cornerR - coreInset).coerceAtLeast(0f),
+                (cornerR - coreInset).coerceAtLeast(0f)
+            ),
+            style = Stroke(width = coreStroke)
+        )
+
+        // 4. Soft upper glass dome specular catchlight wash
+        val topGlowAlpha = (if (isDarkHeader) 0.28f else 0.44f) * effectiveGlassProgress
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = topGlowAlpha),
+                0.20f to Color.White.copy(alpha = topGlowAlpha * 0.34f),
+                0.44f to Color.Transparent,
+                1.0f to Color.Transparent
+            ),
+            cornerRadius = CornerRadius(cornerR, cornerR)
+        )
+
+        // 5. Crisp luminous top-rim specular highlight inset cleanly inside the upper rim
+        val topSpecStroke = (1.8.dp.toPx() + edgeBand * 0.04f).coerceIn(1.5.dp.toPx(), 3.dp.toPx())
+        val topSpecInset = topSpecStroke * 0.5f
+        val topSpecAlpha = (if (isDarkHeader) 0.84f else 0.98f) * effectiveGlassProgress
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                0.0f to Color.White.copy(alpha = topSpecAlpha),
+                0.18f to Color.White.copy(alpha = topSpecAlpha * 0.52f),
+                0.44f to Color.Transparent,
+                1.0f to Color.Transparent
+            ),
+            topLeft = Offset(topSpecInset, topSpecInset),
+            size = Size(
+                (w - topSpecInset * 2f).coerceAtLeast(1f),
+                (h - topSpecInset * 2f).coerceAtLeast(1f)
+            ),
+            cornerRadius = CornerRadius(
+                (cornerR - topSpecInset).coerceAtLeast(0f),
+                (cornerR - topSpecInset).coerceAtLeast(0f)
+            ),
+            style = Stroke(width = topSpecStroke)
         )
     }
 
