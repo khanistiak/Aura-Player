@@ -1,6 +1,9 @@
 package com.istiak.auraplayer
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -108,6 +112,19 @@ fun PrivateFolderSettingsScreen(
 
     val context = LocalContext.current
     val palette = LocalExtendedPalette.current
+
+    // Prevent screenshots & recent-apps captures while viewing Private Folder Settings or PIN setup
+    DisposableEffect(context) {
+        val window = context.findSettingsHostActivity()?.window
+        val hadFlagBefore = window != null &&
+            (window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0
+        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose {
+            if (!hadFlagBefore) {
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
 
     var showPinSetupDialog by remember { mutableStateOf(false) }
     var showSecurityQuestionDialog by remember { mutableStateOf(false) }
@@ -538,7 +555,7 @@ private fun ForgotPinVerifyDialog(
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
-                    if (enteredAnswer.trim().equals(expectedAnswer.trim(), ignoreCase = true)) {
+                    if (BiometricAuth.verifySecretConstantTime(enteredAnswer, expectedAnswer)) {
                         onVerified()
                     } else {
                         errorText = "Incorrect security answer"
@@ -851,5 +868,13 @@ private fun PfActionRow(
                 modifier = Modifier.padding(horizontal = 12.dp)
             )
         }
+    }
+}
+
+private tailrec fun Context.findSettingsHostActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findSettingsHostActivity()
+        else -> null
     }
 }

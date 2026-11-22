@@ -796,7 +796,10 @@ class PrivateVaultManager(private val context: Context) {
         val file = metadataCacheFile
         if (!file.exists()) return emptyMap()
         return try {
-            val arr = JSONArray(file.readText())
+            val raw = file.readText()
+            val decryptedJson = BiometricAuth.decryptSecretValue(raw)
+            if (decryptedJson.isBlank()) return emptyMap()
+            val arr = JSONArray(decryptedJson)
             val map = HashMap<String, CachedVaultMeta>(arr.length())
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
@@ -811,6 +814,10 @@ class PrivateVaultManager(private val context: Context) {
                         hiddenAtSec = obj.optLong("hiddenAtSec", 1L)
                     )
                 }
+            }
+            // Transparently upgrade legacy plaintext cache on disk to Keystore AES-256-GCM
+            if (!BiometricAuth.isEncryptedPayload(raw) && BiometricAuth.isKeystoreProtected()) {
+                writeCachedMetaMap(map)
             }
             map
         } catch (_: Exception) {
@@ -833,7 +840,8 @@ class PrivateVaultManager(private val context: Context) {
                 arr.put(obj)
             }
             metadataCacheFile.parentFile?.mkdirs()
-            metadataCacheFile.writeText(arr.toString())
+            val protectedPayload = BiometricAuth.encryptSecretValue(arr.toString())
+            metadataCacheFile.writeText(protectedPayload)
         } catch (_: Exception) {
         }
     }

@@ -318,6 +318,9 @@ class SettingsDataStore(private val context: Context) {
         val VAULT_SECURITY_QUESTION = stringPreferencesKey("vault_security_question")
         val VAULT_SECURITY_ANSWER = stringPreferencesKey("vault_security_answer")
         val VAULT_PIN_HASH_RECORD = stringPreferencesKey("vault_pin_hash_record")
+        val LEGACY_VAULT_PIN = stringPreferencesKey("vault_pin")
+        val LEGACY_VAULT_FALLBACK_PIN = stringPreferencesKey("vault_fallback_pin")
+        val LEGACY_VAULT_PIN_PLAINTEXT = stringPreferencesKey("vault_pin_plaintext")
 
         val SORT_FIELD = stringPreferencesKey("sort_field")
         val SORT_ASCENDING = booleanPreferencesKey("sort_ascending")
@@ -770,7 +773,43 @@ class SettingsDataStore(private val context: Context) {
             } else {
                 it[Keys.VAULT_PIN_HASH_RECORD] = encryptedRecord
             }
+            it.remove(Keys.LEGACY_VAULT_PIN)
+            it.remove(Keys.LEGACY_VAULT_FALLBACK_PIN)
+            it.remove(Keys.LEGACY_VAULT_PIN_PLAINTEXT)
         }
+    }
+
+    /**
+     * Migrates any legacy plaintext PIN stored in DataStore into PBKDF2-HMAC-SHA256 +
+     * Android Keystore `EncryptedSharedPreferences`, immediately deletes all legacy plaintext keys,
+     * and upgrades any legacy plaintext recovery answer to AES-256-GCM when Keystore is available.
+     */
+    suspend fun migrateAndPurgeLegacyVaultSecrets(): String? {
+        var migratedRecord: String? = null
+        context.appDataStore.edit { prefs ->
+            val legacyPlaintext = prefs[Keys.LEGACY_VAULT_PIN]
+                ?: prefs[Keys.LEGACY_VAULT_FALLBACK_PIN]
+                ?: prefs[Keys.LEGACY_VAULT_PIN_PLAINTEXT]
+            if (!legacyPlaintext.isNullOrBlank()) {
+                val created = BiometricAuth.migrateLegacyPlaintextPin(context, legacyPlaintext)
+                if (!created.isNullOrBlank()) {
+                    prefs[Keys.VAULT_PIN_HASH_RECORD] = created
+                    migratedRecord = created
+                }
+            }
+            prefs.remove(Keys.LEGACY_VAULT_PIN)
+            prefs.remove(Keys.LEGACY_VAULT_FALLBACK_PIN)
+            prefs.remove(Keys.LEGACY_VAULT_PIN_PLAINTEXT)
+
+            val rawAnswer = prefs[Keys.VAULT_SECURITY_ANSWER]
+            if (!rawAnswer.isNullOrBlank() && !BiometricAuth.isEncryptedPayload(rawAnswer)) {
+                val encryptedAnswer = BiometricAuth.encryptSecretValue(rawAnswer)
+                if (encryptedAnswer != rawAnswer) {
+                    prefs[Keys.VAULT_SECURITY_ANSWER] = encryptedAnswer
+                }
+            }
+        }
+        return migratedRecord
     }
 
     suspend fun clearVaultSecurityRecords() {
@@ -778,6 +817,9 @@ class SettingsDataStore(private val context: Context) {
             it.remove(Keys.VAULT_PIN_HASH_RECORD)
             it.remove(Keys.VAULT_SECURITY_QUESTION)
             it.remove(Keys.VAULT_SECURITY_ANSWER)
+            it.remove(Keys.LEGACY_VAULT_PIN)
+            it.remove(Keys.LEGACY_VAULT_FALLBACK_PIN)
+            it.remove(Keys.LEGACY_VAULT_PIN_PLAINTEXT)
         }
     }
 

@@ -45,6 +45,7 @@ jellyfinMedia3Ffmpeg = "1.5.0+1"
 biometric = "1.1.0"
 fragmentKtx = "1.8.6"
 workRuntimeKtx = "2.10.0"
+securityCrypto = "1.1.0-alpha06"
 
 
 [libraries]
@@ -108,6 +109,7 @@ jellyfin-media3-ffmpeg-decoder = { group = "org.jellyfin.media3", name = "media3
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragmentKtx" }
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntimeKtx" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 
 
 [plugins]

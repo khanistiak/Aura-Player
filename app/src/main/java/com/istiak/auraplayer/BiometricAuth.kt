@@ -1,6 +1,7 @@
 package com.istiak.auraplayer
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -11,7 +12,10 @@ import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.fragment.app.FragmentActivity
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -38,6 +42,13 @@ data class VaultLockoutState(
 
     val remainingAttempts: Int
         get() = (maxAttempts - failedAttempts).coerceAtLeast(0)
+
+    val cooldownProgress: Float
+        get() {
+            if (!isLockedOut) return 0f
+            val totalSeconds = (BiometricAuth.LOCKOUT_DURATION_MS / 1000f).coerceAtLeast(1f)
+            return (remainingLockoutSeconds / totalSeconds).coerceIn(0f, 1f)
+        }
 }
 
 /**
@@ -55,23 +66,25 @@ sealed class VaultPinVerificationResult {
  * 1. Zero plaintext PIN storage:
  *    - Generates a fresh 16-byte cryptographic salt (`SecureRandom`) per PIN.
  *    - Hashes the PIN using `PBKDF2WithHmacSHA256` (65,536 iterations, 256-bit derived key;
- *      safe `PBKDF2WithHmacSHA1` fallback on API 24–25 where HmacSHA256 PBE isn't bundled).
+ *      safe `PBKDF2WithHmacSHA1` / iterated salted SHA-256 fallback if a legacy JCA provider lacks HmacSHA256).
  *    - Verifies using constant-time `MessageDigest.isEqual`.
- *    - Automatically migrates any legacy plaintext PIN (`vault_fallback_pin`) on first check/unlock
- *      and immediately deletes the plaintext SharedPreferences entry.
- * 2. Android Keystore AES-256-GCM encryption:
- *    - Wraps vault secrets (salted PIN hash record, brute-force attempt counter, lockout deadline,
- *      and recovery security answer) with an Android Keystore `AES/GCM/NoPadding` 256-bit key
- *      (128-bit authentication tag + fresh 12-byte IV per write) to prevent offline reading or tampering.
+ *    - Automatically migrates any legacy plaintext PIN (`vault_fallback_pin` or DataStore plaintext keys)
+ *      on first check/unlock and immediately deletes the plaintext entry.
+ * 2. Encrypted Storage via AndroidX Security (`EncryptedSharedPreferences`) + Android Keystore:
+ *    - Persists vault credential hashes and brute-force lockout counters inside
+ *      `EncryptedSharedPreferences` backed by an Android Keystore `MasterKey` (`AES256_GCM`).
+ *    - Additionally wraps vault secrets (recovery answer, vault metadata cache, and backup PIN hash record)
+ *      with an Android Keystore `AES/GCM/NoPadding` 256-bit key (128-bit auth tag + fresh 12-byte IV).
  * 3. Brute-force lockout protection:
- *    - After 5 consecutive failed PIN attempts, enforces a 30-second tamper-resistant cooldown timer.
+ *    - After 5 consecutive failed PIN attempts, enforces a 30-second cooldown persisted in encrypted storage.
  * 4. BiometricPrompt:
- *    - Properly bound to `BIOMETRIC_STRONG or DEVICE_CREDENTIAL` on Android 11+ (with compliant
+ *    - Bound to `BIOMETRIC_STRONG or DEVICE_CREDENTIAL` on Android 11+ (with compliant
  *      `BIOMETRIC_WEAK or DEVICE_CREDENTIAL` fallback on API 24–29) as an optional quick unlock.
  */
 object BiometricAuth {
 
-    private const val PREFS_NAME = "aura_vault_security"
+    private const val ENCRYPTED_PREFS_NAME = "aura_vault_encrypted_prefs"
+    private const val LEGACY_PREFS_NAME = "aura_vault_security"
     private const val KEY_LEGACY_FALLBACK_PIN = "vault_fallback_pin"
     private const val KEY_ENCRYPTED_PIN_RECORD = "vault_pin_hash_enc_v2"
     private const val KEY_ENCRYPTED_LOCKOUT = "vault_lockout_enc_v2"
@@ -94,6 +107,9 @@ object BiometricAuth {
 
     private val secureRandom = SecureRandom()
 
+    @Volatile
+    private var cachedSecurePrefs: Triple<Int, SharedPreferences, Boolean>? = null
+
     private fun allowedAuthenticators(): Int {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             BIOMETRIC_STRONG or DEVICE_CREDENTIAL
@@ -102,7 +118,52 @@ object BiometricAuth {
         }
     }
 
-    fun isKeystoreProtected(): Boolean {
+    /**
+     * Opens the Android Keystore-backed `EncryptedSharedPreferences` store, caching per Application
+     * context instance. Falls back gracefully to private SharedPreferences only on test JVMs
+     * (e.g., Robolectric) where the hardware-backed `AndroidKeyStore` provider is unavailable.
+     */
+    @Synchronized
+    private fun getSecurePrefs(context: Context): Pair<SharedPreferences, Boolean> {
+        val appContext = context.applicationContext ?: context
+        val contextId = System.identityHashCode(appContext)
+        cachedSecurePrefs?.let { (cachedId, prefs, isEncrypted) ->
+            if (cachedId == contextId) return prefs to isEncrypted
+        }
+
+        val encrypted = runCatching {
+            val masterKey = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                appContext,
+                ENCRYPTED_PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }.getOrNull()
+
+        val resolved = if (encrypted != null) {
+            Triple(contextId, encrypted, true)
+        } else {
+            val fallback = appContext.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+            Triple(contextId, fallback, false)
+        }
+        cachedSecurePrefs = resolved
+        return resolved.second to resolved.third
+    }
+
+    private fun getLegacyPrefs(context: Context): SharedPreferences {
+        val appContext = context.applicationContext ?: context
+        return appContext.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    fun isKeystoreProtected(context: Context? = null): Boolean {
+        if (context != null) {
+            val (_, usingEncryptedPrefs) = getSecurePrefs(context)
+            if (usingEncryptedPrefs) return true
+        }
         return getOrCreateKeystoreSecretKey() != null
     }
 
@@ -181,49 +242,107 @@ object BiometricAuth {
 
     /**
      * Automatically migrates any legacy plaintext PIN stored under `vault_fallback_pin`
-     * into a salted PBKDF2-HMAC-SHA256 hash wrapped with Android Keystore AES-256-GCM,
-     * then immediately deletes the plaintext key from SharedPreferences.
+     * (and any pre-EncryptedSharedPreferences hash/lockout records) into `EncryptedSharedPreferences`
+     * with a salted PBKDF2-HMAC-SHA256 hash wrapped in Android Keystore AES-256-GCM, then immediately
+     * deletes the plaintext key from legacy SharedPreferences.
      *
      * @return The encrypted salted-hash record if a PIN exists (migrated or already hardened), else null.
      */
     @Synchronized
     fun migrateLegacyPinIfNeeded(context: Context): String? {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val legacyPlaintextPin = prefs.getString(KEY_LEGACY_FALLBACK_PIN, null)
-        val existingEncrypted = prefs.getString(KEY_ENCRYPTED_PIN_RECORD, null)
+        val (securePrefs, isUsingEncryptedStore) = getSecurePrefs(context)
+        val legacyPrefs = getLegacyPrefs(context)
 
+        var existingEncrypted = securePrefs.getString(KEY_ENCRYPTED_PIN_RECORD, null)
+        val legacyPlaintextPin = legacyPrefs.getString(KEY_LEGACY_FALLBACK_PIN, null)
+        val legacyHashedRecord = if (isUsingEncryptedStore) {
+            legacyPrefs.getString(KEY_ENCRYPTED_PIN_RECORD, null)
+        } else {
+            null
+        }
+        val legacyLockoutRecord = if (isUsingEncryptedStore) {
+            legacyPrefs.getString(KEY_ENCRYPTED_LOCKOUT, null)
+        } else {
+            null
+        }
+
+        // Move legacy hash/lockout records from plain SharedPreferences into EncryptedSharedPreferences
+        if (isUsingEncryptedStore && existingEncrypted.isNullOrBlank() && !legacyHashedRecord.isNullOrBlank()) {
+            securePrefs.edit(commit = true) {
+                putString(KEY_ENCRYPTED_PIN_RECORD, legacyHashedRecord)
+            }
+            existingEncrypted = legacyHashedRecord
+        }
+        if (isUsingEncryptedStore && !legacyLockoutRecord.isNullOrBlank() &&
+            securePrefs.getString(KEY_ENCRYPTED_LOCKOUT, null).isNullOrBlank()
+        ) {
+            securePrefs.edit(commit = true) {
+                putString(KEY_ENCRYPTED_LOCKOUT, legacyLockoutRecord)
+            }
+        }
+
+        // Migrate any legacy plaintext PIN into salted PBKDF2 hash and immediately purge plaintext
         if (!legacyPlaintextPin.isNullOrEmpty()) {
-            val hardenedRecord = if (existingEncrypted.isNullOrEmpty()) {
+            val hardenedRecord = if (existingEncrypted.isNullOrBlank()) {
                 val created = createEncryptedPinRecord(legacyPlaintextPin)
-                prefs.edit()
-                    .putString(KEY_ENCRYPTED_PIN_RECORD, created)
-                    .remove(KEY_LEGACY_FALLBACK_PIN)
-                    .commit()
+                securePrefs.edit(commit = true) {
+                    putString(KEY_ENCRYPTED_PIN_RECORD, created)
+                }
                 created
             } else {
-                prefs.edit()
-                    .remove(KEY_LEGACY_FALLBACK_PIN)
-                    .commit()
                 existingEncrypted
+            }
+            legacyPrefs.edit(commit = true) {
+                remove(KEY_LEGACY_FALLBACK_PIN)
+                if (isUsingEncryptedStore) {
+                    remove(KEY_ENCRYPTED_PIN_RECORD)
+                    remove(KEY_ENCRYPTED_LOCKOUT)
+                }
             }
             return hardenedRecord
         }
+
+        // Clean up any leftover non-encrypted records after migrating into EncryptedSharedPreferences
+        if (isUsingEncryptedStore && (!legacyHashedRecord.isNullOrBlank() || !legacyLockoutRecord.isNullOrBlank())) {
+            legacyPrefs.edit(commit = true) {
+                remove(KEY_ENCRYPTED_PIN_RECORD)
+                remove(KEY_ENCRYPTED_LOCKOUT)
+            }
+        }
+
         return existingEncrypted?.takeIf { it.isNotBlank() }
     }
 
     /**
-     * Ensures a DataStore-mirrored encrypted PIN record is synchronized into local hardened storage
-     * if local prefs were cleared while DataStore still holds the record.
+     * Migrates a legacy plaintext PIN discovered in DataStore into PBKDF2-HMAC-SHA256 +
+     * `EncryptedSharedPreferences` without overwriting an already hardened PIN record.
+     */
+    @Synchronized
+    fun migrateLegacyPlaintextPin(context: Context, legacyPlaintextPin: String): String? {
+        if (legacyPlaintextPin.isBlank()) return null
+        val existing = migrateLegacyPinIfNeeded(context)
+        if (!existing.isNullOrBlank()) return existing
+        return setCustomVaultPin(context, legacyPlaintextPin)
+    }
+
+    /**
+     * Ensures a DataStore-mirrored encrypted PIN record is synchronized into local encrypted storage
+     * if local prefs were cleared while DataStore still holds the salted PBKDF2 record.
      */
     @Synchronized
     fun syncEncryptedPinRecordFromDataStore(context: Context, dataStoreRecord: String?) {
         if (dataStoreRecord.isNullOrBlank()) return
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (prefs.getString(KEY_ENCRYPTED_PIN_RECORD, null).isNullOrBlank()) {
-            prefs.edit()
-                .putString(KEY_ENCRYPTED_PIN_RECORD, dataStoreRecord)
-                .remove(KEY_LEGACY_FALLBACK_PIN)
-                .apply()
+        val (securePrefs, _) = getSecurePrefs(context)
+        if (securePrefs.getString(KEY_ENCRYPTED_PIN_RECORD, null).isNullOrBlank()) {
+            securePrefs.edit {
+                putString(KEY_ENCRYPTED_PIN_RECORD, dataStoreRecord)
+            }
+        }
+        val legacyPrefs = getLegacyPrefs(context)
+        if (legacyPrefs.contains(KEY_LEGACY_FALLBACK_PIN)) {
+            legacyPrefs.edit(commit = true) {
+                remove(KEY_LEGACY_FALLBACK_PIN)
+            }
         }
     }
 
@@ -236,21 +355,35 @@ object BiometricAuth {
     }
 
     /**
-     * Hashes [pin] with a fresh 16-byte cryptographic salt (`SecureRandom`) using PBKDF2WithHmacSHA256,
-     * wraps the resulting salt+hash with Android Keystore AES-256-GCM, stores it without ever writing
-     * plaintext, deletes any legacy plaintext key, and resets any prior lockout state.
+     * Hashes [pin] with a fresh 16-byte cryptographic salt (`SecureRandom`) using `PBKDF2WithHmacSHA256`,
+     * wraps the resulting salt+hash with Android Keystore AES-256-GCM, persists it inside
+     * `EncryptedSharedPreferences` without ever writing plaintext, deletes any legacy plaintext key,
+     * and resets any prior lockout state.
      *
-     * @return The encrypted salted-hash record (safe to persist in DataStore as well).
+     * @return The encrypted salted-hash record (safe to mirror in DataStore as well).
      */
     @Synchronized
     fun setCustomVaultPin(context: Context, pin: String): String {
         val encryptedRecord = createEncryptedPinRecord(pin)
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString(KEY_ENCRYPTED_PIN_RECORD, encryptedRecord)
-            .remove(KEY_LEGACY_FALLBACK_PIN)
-            .remove(KEY_ENCRYPTED_LOCKOUT)
-            .commit()
+        val (securePrefs, isUsingEncryptedStore) = getSecurePrefs(context)
+        securePrefs.edit(commit = true) {
+            putString(KEY_ENCRYPTED_PIN_RECORD, encryptedRecord)
+            remove(KEY_LEGACY_FALLBACK_PIN)
+            remove(KEY_ENCRYPTED_LOCKOUT)
+        }
+        if (isUsingEncryptedStore) {
+            val legacyPrefs = getLegacyPrefs(context)
+            if (legacyPrefs.contains(KEY_LEGACY_FALLBACK_PIN) ||
+                legacyPrefs.contains(KEY_ENCRYPTED_PIN_RECORD) ||
+                legacyPrefs.contains(KEY_ENCRYPTED_LOCKOUT)
+            ) {
+                legacyPrefs.edit(commit = true) {
+                    remove(KEY_LEGACY_FALLBACK_PIN)
+                    remove(KEY_ENCRYPTED_PIN_RECORD)
+                    remove(KEY_ENCRYPTED_LOCKOUT)
+                }
+            }
+        }
         return encryptedRecord
     }
 
@@ -312,8 +445,8 @@ object BiometricAuth {
         context: Context,
         nowMs: Long = System.currentTimeMillis()
     ): VaultLockoutState {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_ENCRYPTED_LOCKOUT, null) ?: return VaultLockoutState()
+        val (securePrefs, _) = getSecurePrefs(context)
+        val raw = securePrefs.getString(KEY_ENCRYPTED_LOCKOUT, null) ?: return VaultLockoutState()
         val decoded = unwrapEncryptedPayload(raw) ?: return VaultLockoutState()
         val parts = decoded.split(":")
         if (parts.size != 2) return VaultLockoutState()
@@ -327,7 +460,6 @@ object BiometricAuth {
                 remainingLockoutSeconds = remainingSec
             )
         } else if (lockoutUntil > 0L) {
-            // Cooldown finished — clear expired lockout state cleanly
             resetLockoutState(context)
             VaultLockoutState()
         } else {
@@ -341,23 +473,51 @@ object BiometricAuth {
 
     @Synchronized
     fun resetLockoutState(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().remove(KEY_ENCRYPTED_LOCKOUT).apply()
+        val (securePrefs, _) = getSecurePrefs(context)
+        securePrefs.edit {
+            remove(KEY_ENCRYPTED_LOCKOUT)
+        }
     }
 
     @Synchronized
     fun clearVaultCredentials(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .remove(KEY_LEGACY_FALLBACK_PIN)
-            .remove(KEY_ENCRYPTED_PIN_RECORD)
-            .remove(KEY_ENCRYPTED_LOCKOUT)
-            .commit()
+        val (securePrefs, isUsingEncryptedStore) = getSecurePrefs(context)
+        securePrefs.edit(commit = true) {
+            remove(KEY_LEGACY_FALLBACK_PIN)
+            remove(KEY_ENCRYPTED_PIN_RECORD)
+            remove(KEY_ENCRYPTED_LOCKOUT)
+        }
+        if (isUsingEncryptedStore) {
+            getLegacyPrefs(context).edit(commit = true) {
+                remove(KEY_LEGACY_FALLBACK_PIN)
+                remove(KEY_ENCRYPTED_PIN_RECORD)
+                remove(KEY_ENCRYPTED_LOCKOUT)
+            }
+        }
     }
 
     /**
-     * Encrypts sensitive vault metadata (e.g., recovery security answer) using Android Keystore
-     * AES-256-GCM before storing in DataStore.
+     * Constant-time comparison helper for sensitive recovery answers, hashing normalized UTF-8 bytes
+     * with SHA-256 prior to `MessageDigest.isEqual` so mismatched lengths do not leak timing info.
+     */
+    fun verifySecretConstantTime(
+        entered: String,
+        expected: String,
+        ignoreCase: Boolean = true
+    ): Boolean {
+        val normalizedEntered = entered.trim().let { if (ignoreCase) it.lowercase() else it }
+        val normalizedExpected = expected.trim().let { if (ignoreCase) it.lowercase() else it }
+        if (normalizedEntered.isEmpty() || normalizedExpected.isEmpty()) return false
+        val digest = MessageDigest.getInstance("SHA-256")
+        val enteredHash = digest.digest(normalizedEntered.toByteArray(StandardCharsets.UTF_8))
+        digest.reset()
+        val expectedHash = digest.digest(normalizedExpected.toByteArray(StandardCharsets.UTF_8))
+        return MessageDigest.isEqual(enteredHash, expectedHash)
+    }
+
+    /**
+     * Encrypts sensitive vault metadata (e.g., recovery security answer, vault metadata cache)
+     * using Android Keystore AES-256-GCM before persisting to app storage.
      */
     fun encryptSecretValue(plaintext: String): String {
         if (plaintext.isEmpty()) return ""
@@ -365,8 +525,8 @@ object BiometricAuth {
     }
 
     /**
-     * Decrypts a Keystore-protected value stored in DataStore; transparently returns legacy
-     * non-prefixed strings so existing data migrates cleanly.
+     * Decrypts a Keystore-protected value stored in app storage; transparently returns legacy
+     * non-prefixed strings so existing data migrates seamlessly on first read.
      */
     fun decryptSecretValue(stored: String): String {
         if (stored.isEmpty()) return ""
@@ -377,11 +537,17 @@ object BiometricAuth {
         }
     }
 
+    fun isEncryptedPayload(value: String): Boolean {
+        return value.startsWith(ENC_PREFIX_KEYSTORE)
+    }
+
     private fun saveLockoutState(context: Context, failedAttempts: Int, lockoutUntilEpochMs: Long) {
         val payload = "$failedAttempts:$lockoutUntilEpochMs"
         val wrapped = encryptWithKeystore(payload) ?: "$ENC_PREFIX_FALLBACK_HASH$payload"
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_ENCRYPTED_LOCKOUT, wrapped).apply()
+        val (securePrefs, _) = getSecurePrefs(context)
+        securePrefs.edit {
+            putString(KEY_ENCRYPTED_LOCKOUT, wrapped)
+        }
     }
 
     private fun createEncryptedPinRecord(pin: String): String {
