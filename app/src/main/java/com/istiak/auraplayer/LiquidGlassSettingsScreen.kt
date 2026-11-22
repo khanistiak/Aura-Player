@@ -587,25 +587,25 @@ private fun LiquidGlassStickyPreviewSection(
     } else {
         palette.outlineBorder.copy(alpha = 0.85f)
     }
-    // Soft, low-saturation pastel lavender and pink checkerboard tiles
+    // Rich medium-deep lavender, periwinkle, dusty rose, and muted orchid checkerboard tiles
     val lightPastelTiles = remember {
         listOf(
-            Color(0xFFC5BCE8), // Soft Pastel Lavender
-            Color(0xFFF4C8DE), // Soft Pastel Pink
-            Color(0xFFD3CCF0), // Pale Lilac Lavender
-            Color(0xFFF8D8E8), // Soft Petal Pink
-            Color(0xFFE9C7E0), // Soft Orchid Pink
-            Color(0xFFE6C2D9)  // Soft Dusty Mauve-Pink
+            Color(0xFF8B84C8), // Medium-Deep Lavender
+            Color(0xFFD689AE), // Rich Dusty Rose
+            Color(0xFF8692CF), // Muted Periwinkle
+            Color(0xFFC97EA3), // Deep Dusty Rose
+            Color(0xFFAC7DC4), // Muted Orchid
+            Color(0xFFB97EB8)  // Soft Plum Orchid
         )
     }
     val darkPastelTiles = remember {
         listOf(
-            Color(0xFF4B4668), // Muted Dusky Lavender
-            Color(0xFF72536A), // Soft Dusky Rose-Pink
-            Color(0xFF585278), // Soft Muted Lilac
-            Color(0xFF826078), // Muted Pastel Blush
-            Color(0xFF6A5572), // Soft Muted Mauve
-            Color(0xFF7A5B73)  // Dusty Orchid Pink
+            Color(0xFF4B4782), // Deep Muted Lavender
+            Color(0xFF8C4E73), // Deep Dusty Rose
+            Color(0xFF475391), // Deep Muted Periwinkle
+            Color(0xFF7D4569), // Rich Velvet Rose
+            Color(0xFF6B4A8A), // Deep Muted Orchid
+            Color(0xFF784B80)  // Dusky Plum Orchid
         )
     }
 
